@@ -4,75 +4,100 @@ import io
 import gc
 import numpy as np
 
-st.set_page_config(page_title="Ultra-Res Food Retoucher", page_icon="🍳")
+st.set_page_config(page_title="Stable Pro Food Editor", page_icon="🍳")
 
-def apply_tone_curve(img, brightness, contrast, saturation, sharpness):
-    # 1. 輝度の調整（白飛びを防ぐため、単純なBrightnessではなくガンマ補正的に処理）
-    # 0.9〜0.95あたりが「After.jpg」のマットな黒を作るコツです
-    img = ImageEnhance.Brightness(img).enhance(brightness)
+# --- 画像処理のキャッシュ ---
+@st.cache_data
+def load_and_convert(image_bytes):
+    return Image.open(io.BytesIO(image_bytes)).convert("RGB")
+
+def apply_gamma_and_vibrance(img, gamma, vibrance_val):
+    # 画像をnumpy配列に変換して階調と彩度を分離処理
+    img_array = np.array(img).astype(np.float32) / 255.0
     
-    # 2. 自動コントラスト（極端な端をカットして階調を整える）
-    img = ImageOps.autocontrast(img, cutoff=0.2)
+    # 1. ガンマ補正（白潰れを防ぎ、シャドウだけを締める）
+    # image_11.pngのようなマットな黒を出すため、0.8前後が推奨
+    img_gamma = np.power(img_array, gamma)
     
-    # 3. コントラストと彩度の適用
-    img = ImageEnhance.Contrast(img).enhance(contrast)
-    img = ImageEnhance.Color(img).enhance(saturation)
+    # 2. 自然な彩度（Vibrance）のシミュレーション
+    # チーズの黄色を潰さず、バジルの緑を鮮やかにする
+    avg = np.mean(img_gamma, axis=2, keepdims=True)
+    img_vibrance = img_gamma + (img_gamma - avg) * vibrance_val
     
-    # 4. シャープネス
-    img = ImageEnhance.Sharpness(img).enhance(sharpness)
-    
-    return img
+    # 範囲を0-1にクリップして8bitに戻す
+    result_array = np.clip(img_vibrance * 255.0, 0, 255).astype(np.uint8)
+    del img_array, img_gamma, img_vibrance, avg # メモリ解放
+    return Image.fromarray(result_array)
 
-st.title("🍳 5152px解像度維持・劇的レタッチャー")
+st.title("🍳 料理フォトエディター (トーン分離・青被り防止版)")
+st.write("『Before.jpg』のマットな黒を守り、『After.jpg』の質感をディテールを壊さずに再現します。")
 
-# プロが「After.jpg」を作るための黄金比設定
-DEFAULTS = {'sat': 1.4, 'con': 1.2, 'sha': 3.0, 'bri': 0.95}
+# --- 1. パラメータの管理 ---
+# image_11.pngを再現するための新しい黄金比（初期値）
+DEFAULTS = {
+    'gamma_val': 0.8, # ガンマ：After.jpgのようにマットな黒を出す
+    'vib_val': 0.4,   # 自然な彩度：チーズを潰さず、バジルを鮮やかに
+    'con_val': 1.1,   # コントラスト：元画像のディテールを完全に守るため、ほぼ変化なし
+    'sha_val': 2.0    # シャープネス： After.jpgのようにギラギラさせない
+}
 
-if 'p' not in st.session_state:
-    st.session_state.p = DEFAULTS.copy()
+# セッション状態に値を登録
+for key, val in DEFAULTS.items():
+    if key not in st.session_state:
+        st.session_state[key] = val
 
-uploaded_file = st.file_uploader("5152x5152のBefore.jpgをアップロード...", type=["jpg", "jpeg", "png"])
+# リセットボタンの処理
+def reset_action():
+    for key, val in DEFAULTS.items():
+        st.session_state[key] = val
+
+st.sidebar.subheader("🛠 補正コントロール")
+st.sidebar.button("設定をリセット", on_click=reset_action)
+
+# --- 2. ファイルアップロード ---
+uploaded_file = st.file_uploader("Before.jpgをアップロード...", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
-    uploaded_file.seek(0)
+    # メモリを節約するためキャッシュを使用
     file_bytes = uploaded_file.read()
-    raw_img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-    w, h = raw_img.size
+    raw_img = load_and_convert(file_bytes)
+    uploaded_file.seek(0)
     
-    st.info(f"📸 オリジナル解像度を保持: {w} x {h}")
-
-    # スライダー
+    st.divider()
+    
+    # --- 3. 調整スライダー ---
+    # 白飛びを防ぐため、「明るさ」ではなく「ガンマ」と「自然な彩度」で調整します
     col1, col2 = st.columns(2)
     with col1:
-        sat = st.slider("色の深み (彩度)", 0.0, 3.0, value=st.session_state.p['sat'])
-        con = st.slider("立体感 (コントラスト)", 0.0, 3.0, value=st.session_state.p['con'])
+        gamma_slider = st.slider("影の深さ (ガンマ補正)", 0.2, 2.0, key="gamma_val")
+        vib_slider = st.slider("色の鮮やかさ (自然な彩度)", 0.0, 1.0, key="vib_val")
     with col2:
-        sha = st.slider("具材の質感 (シャープ)", 0.0, 10.0, value=st.session_state.p['sha'])
-        bri = st.slider("白飛び抑制 (明るさ)", 0.0, 2.0, value=st.session_state.p['bri'])
+        sha_slider = st.slider("質感の強さ (シャープネス)", 0.0, 10.0, key="sha_val")
+        con_slider = st.slider("立体感 (コントラスト)", 0.0, 3.0, key="con_val")
 
-    # メモリ節約のためプレビューは縮小
-    preview = raw_img.copy()
-    preview.thumbnail((1200, 1200))
-    preview = apply_tone_curve(preview, bri, con, sat, sha)
-    st.image(preview, caption="補正プレビュー", use_container_width=True)
+    # --- 4. 補正実行（メモリリークを防ぐためuse_container_widthを使用） ---
+    # 1. プロ仕様の階調調整
+    img_fixed = apply_gamma_and_vibrance(raw_img, gamma_slider, vib_slider)
+    # 2. 微調整のコントラストとシャープネス
+    img_fixed = ImageEnhance.Contrast(img_fixed).enhance(con_slider)
+    img_fixed = ImageEnhance.Sharpness(img_fixed).enhance(sha_slider)
 
-    if st.button("🚀 5152x5152で保存 (高画質書き出し)", use_container_width=True):
-        with st.spinner("巨大な画像を1ピクセルずつ精密に加工しています..."):
-            final_img = apply_tone_curve(raw_img, bri, con, sat, sha)
-            buf = io.BytesIO()
-            # サブサンプリングなし、品質100で解像度を完全維持
-            final_img.save(buf, format="JPEG", quality=100, subsampling=0)
-            
-            st.download_button(
-                label="✅ 5152px画像をダウンロード",
-                data=buf.getvalue(),
-                file_name=f"ultra_fixed_{uploaded_file.name}",
-                mime="image/jpeg",
-                use_container_width=True
-            )
-            buf.close()
-            del final_img
-            gc.collect()
+    # プレビュー表示（解像度は維持）
+    st.image(img_fixed, caption="補正後のイメージ (解像度は維持されています)", use_container_width=True)
 
-    del raw_img, preview
+    # ダウンロード
+    buf = io.BytesIO()
+    # JPEGで高画質に保存、解像度は完全に維持
+    img_fixed.save(buf, format="JPEG", quality=100, subsampling=0)
+    
+    st.download_button(
+        label="🚀 補正済み画像をフルサイズで保存",
+        data=buf.getvalue(),
+        file_name=f"fixed_{uploaded_file.name}",
+        mime="image/jpeg",
+        use_container_width=True
+    )
+    
+    # メモリ解放
+    del raw_img, img_fixed
     gc.collect()
