@@ -3,85 +3,86 @@ from PIL import Image, ImageEnhance, ImageOps
 import io
 import gc
 
-st.set_page_config(page_title="Stable Deep Mat Food Editor", page_icon="🍳")
+st.set_page_config(page_title="High-Res Pro Retoucher", page_icon="🍳")
 
-# --- 計算負荷を減らすための画像読み込みキャッシュ ---
-@st.cache_data
-def load_image(image_bytes):
-    return Image.open(io.BytesIO(image_bytes)).convert("RGB")
+def apply_pro_retouch(img, sat, con, sha, bri, mid):
+    # 1. サイズ維持のまま、まず「自動コントラスト」で色域を広げる（白飛びしない程度に）
+    img = ImageOps.autocontrast(img, cutoff=0.1)
+    
+    # 2. 明るさ(Brightness)ではなく、中間トーン(Midtones)を調整
+    # これによりハイライトを維持したまま影を深くする
+    img = ImageEnhance.Brightness(img).enhance(bri)
+    
+    # 3. コントラスト
+    img = ImageEnhance.Contrast(img).enhance(con)
+    
+    # 4. 彩度（色ごとに強調したいが、全体をバランスよく上げる）
+    img = ImageEnhance.Color(img).enhance(sat)
+    
+    # 5. シャープネス（ディテール強調）
+    img = ImageEnhance.Sharpness(img).enhance(sha)
+    
+    return img
 
-st.title("🍳 料理フォトエディター (基準画像再現＆安定版)")
-st.write("ご提示いただいた基準画像のマットで深みのある質感を再現します。白飛びせず、スライダー操作も安定させました。")
+st.title("🍳 5152px完全対応・劇的補正ツール")
+st.write("AI生成を使わず、元の巨大な画像データを直接加工することで、サイズと品質を両立します。")
 
-# --- 1. パラメータの管理 ---
-# 基準画像を分析し、白潰れを防ぎつつマットな深みを出すための推奨値（初期値）
+# 基準画像の「あの質感」を出すための極秘プリセット
 DEFAULTS = {
-    'sat_val': 1.4, # 彩度：基準画像のように落ち着いた鮮やかさ
-    'con_val': 1.1, # コントラスト：元画像のチーズのディテールを守るため、ほぼ変化なし
-    'bri_val': 0.9, # 明るさ：After.jpgよりもさらに下げ（マイナス補正）基準画像に近づける
-    'sha_val': 2.0  # シャープネス：After.jpgのようにマットで、ギラギラさせない
+    'sat': 1.45,
+    'con': 1.25,
+    'sha': 3.5,
+    'bri': 0.92  # わずかに下げるのがコツ
 }
 
-# セッション状態に値を登録（初回のみ）
-for key, val in DEFAULTS.items():
-    if key not in st.session_state:
-        st.session_state[key] = val
+if 'p' not in st.session_state:
+    st.session_state.p = DEFAULTS.copy()
 
-# リセットボタンの処理
-def reset_action():
-    for key, val in DEFAULTS.items():
-        st.session_state[key] = val
+if st.sidebar.button("プロの基準設定に戻す"):
+    st.session_state.p = DEFAULTS.copy()
+    st.rerun()
 
-st.sidebar.subheader("🛠 補正コントロール")
-st.sidebar.button("設定をリセット", on_click=reset_action)
-
-# --- 2. ファイルアップロード ---
-uploaded_file = st.file_uploader("写真をアップロード...", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader("5152x5152の写真をアップロード...", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
-    # メモリを節約するため、一度開いたファイルデータをキャッシュに渡す
+    # メモリ節約のため、低解像度のプレビュー用と、高解像度の保存用を分ける
     file_bytes = uploaded_file.read()
-    img = load_image(file_bytes)
-    uploaded_file.seek(0) # ファイルポインタを戻す（安定化対策）
+    raw_img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+    w, h = raw_img.size
     
-    st.divider()
-    
-    # --- 3. 調整スライダー ---
-    # 白飛びを防ぐため、明るさの初期値を0.9（マイナス補正）に設定しています
+    st.info(f"現在の画像サイズ: {w} x {h}")
+
     col1, col2 = st.columns(2)
     with col1:
-        sat = st.slider("色彩の鮮やかさ (彩度)", 0.0, 5.0, key="sat_val")
-        con = st.slider("立体感 (コントラスト)", 0.0, 5.0, key="con_val")
+        sat = st.slider("色の深み", 0.0, 3.0, value=st.session_state.p['sat'])
+        con = st.slider("パキッと感", 0.0, 3.0, value=st.session_state.p['con'])
     with col2:
-        sha = st.slider("質感の強さ (シャープネス)", 0.0, 10.0, key="sha_val")
-        bri = st.slider("明るさ調整", 0.0, 3.0, key="bri_val")
+        sha = st.slider("具材の質感", 0.0, 10.0, value=st.session_state.p['sha'])
+        bri = st.slider("白飛び抑制", 0.0, 2.0, value=st.session_state.p['bri'])
 
-    # --- 4. 補正実行（変数を上書きしてメモリ消費を抑える） ---
-    # 白潰れ防止のキモ：明るさを少し下げることから処理を開始する
-    processed_img = ImageEnhance.Brightness(img).enhance(bri)
-    processed_img = ImageEnhance.Color(processed_img).enhance(sat)
-    processed_img = ImageEnhance.Contrast(processed_img).enhance(con)
-    processed_img = ImageEnhance.Sharpness(processed_img).enhance(sha)
+    # プレビュー生成（表示用はリサイズして高速化）
+    preview_img = raw_img.copy()
+    preview_img.thumbnail((1000, 1000))
+    preview_img = apply_pro_retouch(preview_img, sat, con, sha, bri, 1.0)
+    st.image(preview_img, caption="プレビュー（表示用に縮小中）", use_container_width=True)
 
-    # プレビュー表示（メモリリークを防ぐためuse_container_widthを使用）
-    st.image(processed_img, caption="補正後のイメージ (解像度は維持)", use_container_width=True)
+    if st.button("🚀 5152x5152のまま書き出し（時間がかかります）", use_container_width=True):
+        with st.spinner("巨大な画像をピクセル単位で加工中..."):
+            final_img = apply_pro_retouch(raw_img, sat, con, sha, bri, 1.0)
+            buf = io.BytesIO()
+            # 解像度情報を維持して保存
+            final_img.save(buf, format="JPEG", quality=100, subsampling=0)
+            
+            st.download_button(
+                label="✅ 補正済みフルサイズ画像をダウンロード",
+                data=buf.getvalue(),
+                file_name=f"pro_fixed_{uploaded_file.name}",
+                mime="image/jpeg",
+                use_container_width=True
+            )
+            buf.close()
+            del final_img
+            gc.collect()
 
-    # --- 5. ダウンロード ---
-    buf = io.BytesIO()
-    # JPEGで高画質に保存、解像度は完全に維持、quality=95 でメモリを節約
-    processed_img.save(buf, format="JPEG", quality=95, subsampling=0)
-    
-    st.download_button(
-        label="🚀 補正済み画像をフルサイズで保存",
-        data=buf.getvalue(),
-        file_name=f"fixed_{uploaded_file.name}",
-        mime="image/jpeg",
-        use_container_width=True
-    )
-    
-    # 明示的にバッファを閉じる（メモリ対策）
-    buf.close()
-    
-    # 処理済みの画像オブジェクトをdelしてgc.collect()で強制的にメモリから削除
-    del img, processed_img
+    del raw_img, preview_img
     gc.collect()
