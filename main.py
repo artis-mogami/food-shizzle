@@ -25,7 +25,6 @@ def resize_image(img, max_size=5000):
 # ----------------------------
 def fix_white_balance(img):
     arr = np.array(img).astype(np.float32)
-
     avg = np.mean(arr, axis=(0,1))
     gray = np.mean(avg)
 
@@ -36,56 +35,59 @@ def fix_white_balance(img):
     return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
 
 # ----------------------------
-# 白保護（NEW）
+# 白完全保護（強化版）
 # ----------------------------
-def protect_whites(arr, threshold=0.08):
-    # 彩度が低い＝白/グレー
+def get_white_mask(arr, threshold=0.06):
     max_c = arr.max(axis=2)
     min_c = arr.min(axis=2)
     sat = max_c - min_c
-
-    mask = sat < threshold
-    return mask
+    return sat < threshold
 
 # ----------------------------
-# 部分カラー強化（緑＋オレンジ）（NEW）
+# 色ブースト（改良版）
 # ----------------------------
-def selective_color_boost(img, green_boost=0.25, orange_boost=0.3):
+def selective_color_boost(img, green_boost=0.35, orange_boost=0.45):
     arr = np.array(img).astype(np.float32) / 255.0
 
     r, g, b = arr[:,:,0], arr[:,:,1], arr[:,:,2]
 
-    # 緑マスク
-    green_mask = (g > r) & (g > b)
+    white_mask = get_white_mask(arr)
 
-    # オレンジマスク（チーズ）
-    orange_mask = (r > g) & (g > b) & (r > 0.4)
+    # 緑判定（広げた）
+    green_mask = (g > r * 0.85) & (g > b * 0.85)
 
-    # 彩度強化
+    # オレンジ判定（広げた）
+    orange_mask = (r > g * 0.9) & (g > b * 0.7) & (r > 0.35)
+
     avg = np.mean(arr, axis=2, keepdims=True)
+
+    # 白以外のみ適用
+    green_mask &= ~white_mask
+    orange_mask &= ~white_mask
 
     arr[green_mask] += (arr[green_mask] - avg[green_mask]) * green_boost
     arr[orange_mask] += (arr[orange_mask] - avg[orange_mask]) * orange_boost
 
+    # オレンジを少し赤寄りに
+    arr[:,:,0] *= 1.05  # R微増
+
     return Image.fromarray(np.clip(arr * 255, 0, 255).astype(np.uint8))
 
 # ----------------------------
-# ガンマ＋濃さUP（改良）
+# トーン（濃さ＋ガンマ）
 # ----------------------------
-def apply_gamma_and_density(img, gamma, density):
+def apply_tone(img, gamma=0.9, density=1.08):
     arr = np.array(img).astype(np.float32) / 255.0
 
     arr = np.power(arr, gamma)
-
-    # 濃さUP（黒を締める）
     arr = arr * density
 
     return Image.fromarray(np.clip(arr * 255, 0, 255).astype(np.uint8))
 
 # ----------------------------
-# 白飛び防止
+# ハイライト圧縮
 # ----------------------------
-def compress_highlight(img, threshold=235, strength=0.5):
+def compress_highlight(img, threshold=240, strength=0.5):
     arr = np.array(img).astype(np.float32)
 
     mask = arr > threshold
@@ -94,9 +96,25 @@ def compress_highlight(img, threshold=235, strength=0.5):
     return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
 
 # ----------------------------
-# 高品質シャープ（改良）
+# ウォームトーン（NEW）
 # ----------------------------
-def smart_sharpen(img, strength=1.6):
+def add_warmth(img, strength=0.04):
+    arr = np.array(img).astype(np.float32) / 255.0
+
+    white_mask = get_white_mask(arr)
+
+    # 白以外だけ暖色化
+    arr[:,:,0] += strength
+    arr[:,:,2] -= strength * 0.5
+
+    arr[white_mask] = arr[white_mask]  # 白保護
+
+    return Image.fromarray(np.clip(arr * 255, 0, 255).astype(np.uint8))
+
+# ----------------------------
+# シャープ
+# ----------------------------
+def smart_sharpen(img, strength=2.0):
     arr = np.array(img).astype(np.float32)
 
     blur = (
@@ -112,41 +130,24 @@ def smart_sharpen(img, strength=1.6):
 # ----------------------------
 # UI
 # ----------------------------
-st.title("🍳 料理フォトエディター（完成版）")
+st.title("🍳 料理フォトエディター（完成版＋）")
 
 uploaded_file = st.file_uploader("画像アップロード", type=["jpg","jpeg","png"])
-
-DEFAULTS = {
-    "gamma": 0.85,
-    "density": 1.05,
-    "contrast": 1.15,
-    "sharpness": 1.8
-}
-
-for k,v in DEFAULTS.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
-
-st.sidebar.header("調整")
-
-gamma = st.sidebar.slider("明るさ", 0.5, 1.5, key="gamma")
-density = st.sidebar.slider("色の濃さ", 0.8, 1.3, key="density")
-contrast = st.sidebar.slider("コントラスト", 0.8, 2.0, key="contrast")
-sharpness = st.sidebar.slider("シャープ", 0.5, 3.0, key="sharpness")
 
 if uploaded_file:
     img = load_image(uploaded_file.read())
     img = resize_image(img)
 
     # ----------------------------
-    # 処理パイプライン（重要）
+    # パイプライン（最重要）
     # ----------------------------
     img = fix_white_balance(img)
-    img = selective_color_boost(img)   # ★色の主役強化
-    img = apply_gamma_and_density(img, gamma, density)
+    img = selective_color_boost(img)
+    img = apply_tone(img)
+    img = add_warmth(img)
     img = compress_highlight(img)
-    img = ImageEnhance.Contrast(img).enhance(contrast)
-    img = smart_sharpen(img, sharpness)
+    img = ImageEnhance.Contrast(img).enhance(1.2)
+    img = smart_sharpen(img, 2.0)
 
     st.image(img, use_container_width=True)
 
