@@ -1,103 +1,110 @@
 import streamlit as st
-from PIL import Image, ImageEnhance, ImageOps
+from PIL import Image, ImageEnhance
 import io
-import gc
 import numpy as np
+import gc
 
 st.set_page_config(page_title="Stable Pro Food Editor", page_icon="🍳")
 
-# --- 画像処理のキャッシュ ---
-@st.cache_data
-def load_and_convert(image_bytes):
+# ----------------------------
+# 画像ロード（キャッシュ）
+# ----------------------------
+@st.cache_data(show_spinner=False)
+def load_image(image_bytes):
     return Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
-def apply_gamma_and_vibrance(img, gamma, vibrance_val):
-    # 画像をnumpy配列に変換して階調と彩度を分離処理
-    img_array = np.array(img).astype(np.float32) / 255.0
-    
-    # 1. ガンマ補正（白潰れを防ぎ、シャドウだけを締める）
-    # image_15.pngのようなマットな黒を出すため、0.8前後が推奨
-    img_gamma = np.power(img_array, gamma)
-    
-    # 2. 自然な彩度（Vibrance）のシミュレーション
-    # チーズの黄色を潰さず、バジルの緑を鮮やかにする
-    avg = np.mean(img_gamma, axis=2, keepdims=True)
-    img_vibrance = img_gamma + (img_gamma - avg) * vibrance_val
-    
-    # 範囲を0-1にクリップして8bitに戻す
-    result_array = np.clip(img_vibrance * 255.0, 0, 255).astype(np.uint8)
-    del img_array, img_gamma, img_vibrance, avg # メモリ解放
-    return Image.fromarray(result_array)
+# ----------------------------
+# 最大サイズ制御（5000px）
+# ----------------------------
+def resize_image(img, max_size=5000):
+    img.thumbnail((max_size, max_size))
+    return img
 
-st.title("🍳 料理フォトエディター ")
-st.write("質感をディテールを壊さずに再現します。")
+# ----------------------------
+# ホワイトバランス補正（青被り対策）
+# ----------------------------
+def fix_white_balance(img):
+    arr = np.array(img).astype(np.float32)
 
-# --- 1. パラメータの管理 ---
-# image_15.pngを再現するための新しい黄金比（初期値）
+    r, g, b = arr[:,:,0], arr[:,:,1], arr[:,:,2]
+
+    avg_r, avg_g, avg_b = np.mean(r), np.mean(g), np.mean(b)
+    avg_gray = (avg_r + avg_g + avg_b) / 3
+
+    r *= avg_gray / (avg_r + 1e-6)
+    g *= avg_gray / (avg_g + 1e-6)
+    b *= avg_gray / (avg_b + 1e-6)
+
+    balanced = np.stack([r, g, b], axis=2)
+    return Image.fromarray(np.clip(balanced, 0, 255).astype(np.uint8))
+
+# ----------------------------
+# ガンマ＋自然な彩度
+# ----------------------------
+def apply_gamma_and_vibrance(img, gamma, vibrance):
+    arr = np.array(img).astype(np.float32) / 255.0
+
+    # ガンマ補正
+    arr = np.power(arr, gamma)
+
+    # Vibrance（自然な彩度）
+    avg = np.mean(arr, axis=2, keepdims=True)
+    arr = arr + (arr - avg) * vibrance
+
+    return Image.fromarray(np.clip(arr * 255, 0, 255).astype(np.uint8))
+
+# ----------------------------
+# UI
+# ----------------------------
+st.title("🍳 料理フォトエディター（安定版）")
+st.write("アップするだけで自然に鮮やかに補正")
+
+uploaded_file = st.file_uploader("画像をアップロード", type=["jpg", "jpeg", "png"])
+
+# デフォルト値
 DEFAULTS = {
-    'gamma_val': 0.8, # ガンマ：After.jpgのようにマットな黒を出す
-    'vib_val': 0.4,   # 自然な彩度：チーズを潰さず、バジルを鮮やかに
-    'con_val': 1.1,   # コントラスト：元画像のディテールを完全に守るため、ほぼ変化なし
-    'sha_val': 2.0    # シャープネス： After.jpgのようにギラギラさせない
+    "gamma": 0.85,
+    "vibrance": 0.4,
+    "contrast": 1.1,
+    "sharpness": 1.8
 }
 
-# セッション状態に値を登録
-for key, val in DEFAULTS.items():
-    if key not in st.session_state:
-        st.session_state[key] = val
+for k, v in DEFAULTS.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
-# リセットボタンの処理
-def reset_action():
-    for key, val in DEFAULTS.items():
-        st.session_state[key] = val
+# サイドバー
+st.sidebar.header("調整")
 
-st.sidebar.subheader("🛠 補正コントロール")
-st.sidebar.button("設定をリセット", on_click=reset_action)
+gamma = st.sidebar.slider("影の深さ（ガンマ）", 0.3, 1.5, key="gamma")
+vibrance = st.sidebar.slider("鮮やかさ", 0.0, 1.0, key="vibrance")
+contrast = st.sidebar.slider("コントラスト", 0.5, 2.0, key="contrast")
+sharpness = st.sidebar.slider("シャープネス", 0.0, 5.0, key="sharpness")
 
-# --- 2. ファイルアップロード ---
-uploaded_file = st.file_uploader("Before.jpgをアップロード...", type=["jpg", "jpeg", "png"])
-
-if uploaded_file is not None:
-    # メモリを節約するためキャッシュを使用
+if uploaded_file:
     file_bytes = uploaded_file.read()
-    raw_img = load_and_convert(file_bytes)
-    uploaded_file.seek(0)
-    
-    st.divider()
-    
-    # --- 3. 調整スライダー ---
-    # 白飛びを防ぐため、「明るさ」ではなく「ガンマ」と「自然な彩度」で調整します
-    col1, col2 = st.columns(2)
-    with col1:
-        gamma_slider = st.slider("影の深さ (ガンマ補正)", 0.2, 2.0, key="gamma_val")
-        vib_slider = st.slider("色の鮮やかさ (自然な彩度)", 0.0, 1.0, key="vib_val")
-    with col2:
-        sha_slider = st.slider("質感の強さ (シャープネス)", 0.0, 10.0, key="sha_val")
-        con_slider = st.slider("立体感 (コントラスト)", 0.0, 3.0, key="con_val")
 
-    # --- 4. 補正実行（メモリリークを防ぐためuse_container_widthを使用） ---
-    # 1. プロ仕様の階調調整
-    img_fixed = apply_gamma_and_vibrance(raw_img, gamma_slider, vib_slider)
-    # 2. 微調整のコントラストとシャープネス
-    img_fixed = ImageEnhance.Contrast(img_fixed).enhance(con_slider)
-    img_fixed = ImageEnhance.Sharpness(img_fixed).enhance(sha_slider)
+    img = load_image(file_bytes)
+    img = resize_image(img, 5000)
 
-    # プレビュー表示（解像度は維持）
-    st.image(img_fixed, caption="補正後のイメージ (解像度は維持されています)", use_container_width=True)
+    # 処理パイプライン
+    img = fix_white_balance(img)
+    img = apply_gamma_and_vibrance(img, gamma, vibrance)
+    img = ImageEnhance.Contrast(img).enhance(contrast)
+    img = ImageEnhance.Sharpness(img).enhance(sharpness)
+
+    st.image(img, caption="補正後", use_container_width=True)
 
     # ダウンロード
     buf = io.BytesIO()
-    # JPEGで高画質に保存、解数度は完全に維持
-    img_fixed.save(buf, format="JPEG", quality=100, subsampling=0)
-    
+    img.save(buf, format="JPEG", quality=95, subsampling=0)
+
     st.download_button(
-        label="🚀 補正済み画像をフルサイズで保存",
-        data=buf.getvalue(),
-        file_name=f"fixed_{uploaded_file.name}",
-        mime="image/jpeg",
-        use_container_width=True
+        "ダウンロード",
+        buf.getvalue(),
+        file_name="edited.jpg",
+        mime="image/jpeg"
     )
-    
-    # メモリ解放
-    del raw_img, img_fixed
+
+    del img
     gc.collect()
