@@ -37,18 +37,15 @@ def get_white_mask(arr, threshold=0.05):
     return (max_c - min_c) < threshold
 
 # ----------------------------
-# 色強化（改良版）
+# 色強化（パラメータ化）
 # ----------------------------
-def selective_color_boost(img, green_boost=0.45, orange_boost=0.55):
+def selective_color_boost(img, green_boost, orange_boost):
     arr = np.array(img).astype(np.float32) / 255.0
     r, g, b = arr[:,:,0], arr[:,:,1], arr[:,:,2]
 
     white_mask = get_white_mask(arr)
 
-    # 緑（強化）
     green_mask = (g > r * 0.8) & (g > b * 0.8)
-
-    # オレンジ（広げた）
     orange_mask = (r > g * 0.85) & (g > b * 0.6) & (r > 0.3)
 
     avg = np.mean(arr, axis=2, keepdims=True)
@@ -59,16 +56,12 @@ def selective_color_boost(img, green_boost=0.45, orange_boost=0.55):
     arr[green_mask] += (arr[green_mask] - avg[green_mask]) * green_boost
     arr[orange_mask] += (arr[orange_mask] - avg[orange_mask]) * orange_boost
 
-    # チーズをしっかりオレンジ寄せ
-    arr[:,:,0] *= 1.03
-    arr[:,:,1] *= 1.01
-
     return Image.fromarray(np.clip(arr * 255, 0, 255).astype(np.uint8))
 
 # ----------------------------
 # トーン
 # ----------------------------
-def apply_tone(img, gamma=0.92, density=1.05):
+def apply_tone(img, gamma, density):
     arr = np.array(img).astype(np.float32) / 255.0
     arr = np.power(arr, gamma)
     arr = arr * density
@@ -77,20 +70,19 @@ def apply_tone(img, gamma=0.92, density=1.05):
 # ----------------------------
 # 白飛び防止
 # ----------------------------
-def compress_highlight(img, threshold=242, strength=0.6):
+def compress_highlight(img, threshold, strength):
     arr = np.array(img).astype(np.float32)
     mask = arr > threshold
     arr[mask] = threshold + (arr[mask] - threshold) * strength
     return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
 
 # ----------------------------
-# クール寄せ（NEW）
+# クール寄せ
 # ----------------------------
-def add_cool_tone(img, strength=0.03):
+def add_cool_tone(img, strength):
     arr = np.array(img).astype(np.float32) / 255.0
     white_mask = get_white_mask(arr)
 
-    # 赤を少し下げて青を足す
     arr[:,:,0] *= (1 - strength)
     arr[:,:,2] *= (1 + strength)
 
@@ -99,9 +91,9 @@ def add_cool_tone(img, strength=0.03):
     return Image.fromarray(np.clip(arr * 255, 0, 255).astype(np.uint8))
 
 # ----------------------------
-# シャープ（強化）
+# シャープ
 # ----------------------------
-def smart_sharpen(img, strength=2.4):
+def smart_sharpen(img, strength):
     arr = np.array(img).astype(np.float32)
 
     blur = (
@@ -115,11 +107,27 @@ def smart_sharpen(img, strength=2.4):
     return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
 
 # ----------------------------
-# UI
+# UI（復活）
 # ----------------------------
-st.title("🍳 料理フォトエディター（色完成版）")
+st.title("🍳 料理フォトエディター（完成版）")
 
 uploaded_file = st.file_uploader("画像アップロード", type=["jpg","jpeg","png"])
+
+st.sidebar.header("🎛 調整")
+
+gamma = st.sidebar.slider("明るさ（ガンマ）", 0.7, 1.2, 0.92)
+density = st.sidebar.slider("色の濃さ", 0.9, 1.3, 1.05)
+
+green_boost = st.sidebar.slider("葉っぱ強調", 0.0, 0.8, 0.45)
+orange_boost = st.sidebar.slider("チーズ強調", 0.0, 0.8, 0.55)
+
+cool_strength = st.sidebar.slider("青寄せ", 0.0, 0.08, 0.03)
+
+highlight_th = st.sidebar.slider("白飛び閾値", 220, 255, 242)
+highlight_str = st.sidebar.slider("白飛び抑制", 0.3, 0.8, 0.6)
+
+contrast = st.sidebar.slider("コントラスト", 1.0, 1.5, 1.2)
+sharp = st.sidebar.slider("シャープ", 1.0, 3.5, 2.4)
 
 if uploaded_file:
     img = load_image(uploaded_file.read())
@@ -127,12 +135,12 @@ if uploaded_file:
 
     # パイプライン
     img = fix_white_balance(img)
-    img = selective_color_boost(img)
-    img = apply_tone(img)
-    img = add_cool_tone(img)  # ←ここが今回のキモ
-    img = compress_highlight(img)
-    img = ImageEnhance.Contrast(img).enhance(1.2)
-    img = smart_sharpen(img, 2.4)
+    img = selective_color_boost(img, green_boost, orange_boost)
+    img = apply_tone(img, gamma, density)
+    img = add_cool_tone(img, cool_strength)
+    img = compress_highlight(img, highlight_th, highlight_str)
+    img = ImageEnhance.Contrast(img).enhance(contrast)
+    img = smart_sharpen(img, sharp)
 
     st.image(img, use_container_width=True)
 
