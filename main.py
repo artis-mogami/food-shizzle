@@ -3,18 +3,18 @@ from PIL import Image, ImageEnhance
 import io
 import gc
 
-st.set_page_config(page_title="Deep Sizzle Food Editor", page_icon="🍳")
+st.set_page_config(page_title="Deep Mat Food Editor", page_icon="🍳")
 
-st.title("🍳 料理フォトエディター (白飛び防止・深み優先版)")
-st.write("『Before.jpg』の深みを守りつつ、『After.jpg』のカリッとした質感を再現します。")
+st.title("🍳 料理フォトエディター (マット・深み優先版)")
+st.write("ご提示いただいた基準画像のマットで深みのある質感を再現します。チーズのディテールを守ります。")
 
 # --- 1. パラメータの管理 ---
-# 白飛びを防ぎ、深みを出すための新しい推奨値
+# 基準画像を分析し、白飛びを防ぎつつマットな深みを出すための推奨値
 DEFAULTS = {
-    'sat_val': 1.6, # 彩度：After.jpgに近づけつつ、白潰れしないレベル
-    'con_val': 1.5, # コントラスト：黒を締め、料理を浮かび上がらせる
+    'sat_val': 1.4, # 彩度：基準画像のように落ち着いた鮮やかさ
+    'con_val': 1.1, # コントラスト：元画像のディテールを完全に守るため、ほぼ変化なし
     'bri_val': 1.0, # 明るさ：元画像を維持し、白飛びを徹底的に防ぐ
-    'sha_val': 3.0  # シャープネス：具材のカリカリ感を強調
+    'sha_val': 1.5  # シャープネス：基準画像のようにマットで、ギラギラさせない
 }
 
 # セッション状態に値を登録（初回のみ）
@@ -41,7 +41,6 @@ if uploaded_file is not None:
     st.divider()
     
     # --- 3. 調整スライダー ---
-    # 白飛びを防ぐため、明るさの初期値を1.0に設定しています
     col1, col2 = st.columns(2)
     with col1:
         sat = st.slider("色彩の鮮やかさ (彩度)", 0.0, 5.0, key="sat_val")
@@ -68,7 +67,7 @@ if uploaded_file is not None:
     st.download_button(
         label="🚀 補正済み画像をフルサイズで保存",
         data=buf.getvalue(),
-        file_name=f"sizzled_{uploaded_file.name}",
+        file_name=f"fixed_{uploaded_file.name}",
         mime="image/jpeg",
         use_container_width=True
     )
