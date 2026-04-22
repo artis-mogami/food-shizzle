@@ -1,128 +1,164 @@
 import streamlit as st
 from PIL import Image, ImageEnhance
-import numpy as np
 import io
+import numpy as np
 import gc
 
-st.set_page_config(page_title="Food Editor Pro", page_icon="🍳")
+st.set_page_config(page_title="Pro Food Editor", page_icon="🍳")
 
 # ----------------------------
-# Load
+# 画像ロード
 # ----------------------------
-@st.cache_data
-def load_image(b):
-    return Image.open(io.BytesIO(b)).convert("RGB")
+@st.cache_data(show_spinner=False)
+def load_image(image_bytes):
+    return Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
+# ----------------------------
+# リサイズ
+# ----------------------------
 def resize_image(img, max_size=5000):
     img.thumbnail((max_size, max_size))
     return img
 
 # ----------------------------
-# HSV変換（NumPy）
+# ホワイトバランス
 # ----------------------------
-def rgb_to_hsv(arr):
-    arr = arr / 255.0
-    r,g,b = arr[:,:,0], arr[:,:,1], arr[:,:,2]
-
-    maxc = np.max(arr, axis=2)
-    minc = np.min(arr, axis=2)
-    diff = maxc - minc
-
-    h = np.zeros_like(maxc)
-    s = np.zeros_like(maxc)
-    v = maxc
-
-    mask = diff != 0
-
-    h[mask & (maxc == r)] = (60 * ((g-b)/diff) + 360)[mask & (maxc == r)]
-    h[mask & (maxc == g)] = (60 * ((b-r)/diff) + 120)[mask & (maxc == g)]
-    h[mask & (maxc == b)] = (60 * ((r-g)/diff) + 240)[mask & (maxc == b)]
-
-    h = h % 360
-    s[maxc != 0] = diff[maxc != 0] / maxc[maxc != 0]
-
-    return h, s, v
-
-# ----------------------------
-# 白保護＋色強調
-# ----------------------------
-def selective_color_boost(img):
+def fix_white_balance(img):
     arr = np.array(img).astype(np.float32)
-    original = arr.copy()
 
-    h, s, v = rgb_to_hsv(arr)
+    avg = np.mean(arr, axis=(0,1))
+    gray = np.mean(avg)
 
-    # ------------------------
-    # マスク
-    # ------------------------
-    white_mask = (s < 0.12) & (v > 0.75)
-    green_mask = (h > 60) & (h < 160)
-    orange_mask = (h > 10) & (h < 50)
+    arr[:,:,0] *= gray / (avg[0] + 1e-6)
+    arr[:,:,1] *= gray / (avg[1] + 1e-6)
+    arr[:,:,2] *= gray / (avg[2] + 1e-6)
 
-    # ------------------------
-    # 色強調（非白のみ）
-    # ------------------------
-    boost = np.ones_like(arr)
-
-    boost[:,:,0] += orange_mask * 0.08   # R
-    boost[:,:,1] += green_mask * 0.10    # G
-    boost[:,:,2] -= orange_mask * 0.05   # B少し下げる
-
-    arr = arr * boost
-
-    # ------------------------
-    # 白を戻す（重要）
-    # ------------------------
-    arr[white_mask] = original[white_mask]
-
-    return Image.fromarray(np.clip(arr,0,255).astype(np.uint8))
+    return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
 
 # ----------------------------
-# ハイライト圧縮（弱め）
+# 白保護（NEW）
 # ----------------------------
-def compress_highlight(img):
+def protect_whites(arr, threshold=0.08):
+    # 彩度が低い＝白/グレー
+    max_c = arr.max(axis=2)
+    min_c = arr.min(axis=2)
+    sat = max_c - min_c
+
+    mask = sat < threshold
+    return mask
+
+# ----------------------------
+# 部分カラー強化（緑＋オレンジ）（NEW）
+# ----------------------------
+def selective_color_boost(img, green_boost=0.25, orange_boost=0.3):
+    arr = np.array(img).astype(np.float32) / 255.0
+
+    r, g, b = arr[:,:,0], arr[:,:,1], arr[:,:,2]
+
+    # 緑マスク
+    green_mask = (g > r) & (g > b)
+
+    # オレンジマスク（チーズ）
+    orange_mask = (r > g) & (g > b) & (r > 0.4)
+
+    # 彩度強化
+    avg = np.mean(arr, axis=2, keepdims=True)
+
+    arr[green_mask] += (arr[green_mask] - avg[green_mask]) * green_boost
+    arr[orange_mask] += (arr[orange_mask] - avg[orange_mask]) * orange_boost
+
+    return Image.fromarray(np.clip(arr * 255, 0, 255).astype(np.uint8))
+
+# ----------------------------
+# ガンマ＋濃さUP（改良）
+# ----------------------------
+def apply_gamma_and_density(img, gamma, density):
+    arr = np.array(img).astype(np.float32) / 255.0
+
+    arr = np.power(arr, gamma)
+
+    # 濃さUP（黒を締める）
+    arr = arr * density
+
+    return Image.fromarray(np.clip(arr * 255, 0, 255).astype(np.uint8))
+
+# ----------------------------
+# 白飛び防止
+# ----------------------------
+def compress_highlight(img, threshold=235, strength=0.5):
     arr = np.array(img).astype(np.float32)
-    mask = arr > 220
-    arr[mask] = 220 + (arr[mask]-220)*0.6
-    return Image.fromarray(np.clip(arr,0,255).astype(np.uint8))
+
+    mask = arr > threshold
+    arr[mask] = threshold + (arr[mask] - threshold) * strength
+
+    return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
 
 # ----------------------------
-# シャープ（安全版）
+# 高品質シャープ（改良）
 # ----------------------------
-def sharpen(img):
-    return ImageEnhance.Sharpness(img).enhance(1.6)
+def smart_sharpen(img, strength=1.6):
+    arr = np.array(img).astype(np.float32)
 
-# ----------------------------
-# ガンマ
-# ----------------------------
-def gamma(img, g=0.9):
-    arr = np.array(img).astype(np.float32)/255.0
-    arr = np.power(arr, g)
-    return Image.fromarray(np.clip(arr*255,0,255).astype(np.uint8))
+    blur = (
+        np.roll(arr,1,0) + np.roll(arr,-1,0) +
+        np.roll(arr,1,1) + np.roll(arr,-1,1)
+    ) / 4
+
+    detail = arr - blur
+    arr = arr + detail * strength
+
+    return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
 
 # ----------------------------
 # UI
 # ----------------------------
-st.title("🍳 料理フォトエディター（白保護版）")
+st.title("🍳 料理フォトエディター（完成版）")
 
-uploaded = st.file_uploader("画像アップロード", type=["jpg","png","jpeg"])
+uploaded_file = st.file_uploader("画像アップロード", type=["jpg","jpeg","png"])
 
-if uploaded:
-    img = load_image(uploaded.read())
-    img = resize_image(img, 5000)
+DEFAULTS = {
+    "gamma": 0.85,
+    "density": 1.05,
+    "contrast": 1.15,
+    "sharpness": 1.8
+}
 
-    # パイプライン
-    img = gamma(img, 0.9)
-    img = selective_color_boost(img)   # ★重要
+for k,v in DEFAULTS.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+st.sidebar.header("調整")
+
+gamma = st.sidebar.slider("明るさ", 0.5, 1.5, key="gamma")
+density = st.sidebar.slider("色の濃さ", 0.8, 1.3, key="density")
+contrast = st.sidebar.slider("コントラスト", 0.8, 2.0, key="contrast")
+sharpness = st.sidebar.slider("シャープ", 0.5, 3.0, key="sharpness")
+
+if uploaded_file:
+    img = load_image(uploaded_file.read())
+    img = resize_image(img)
+
+    # ----------------------------
+    # 処理パイプライン（重要）
+    # ----------------------------
+    img = fix_white_balance(img)
+    img = selective_color_boost(img)   # ★色の主役強化
+    img = apply_gamma_and_density(img, gamma, density)
     img = compress_highlight(img)
-    img = sharpen(img)
+    img = ImageEnhance.Contrast(img).enhance(contrast)
+    img = smart_sharpen(img, sharpness)
 
     st.image(img, use_container_width=True)
 
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=95)
+    img.save(buf, format="JPEG", quality=95, subsampling=0)
 
-    st.download_button("ダウンロード", buf.getvalue(), "edited.jpg")
+    st.download_button(
+        "ダウンロード",
+        buf.getvalue(),
+        "food_pro.jpg",
+        "image/jpeg"
+    )
 
     del img
     gc.collect()
