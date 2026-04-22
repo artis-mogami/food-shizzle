@@ -3,18 +3,18 @@ from PIL import Image, ImageEnhance
 import io
 import gc
 
-st.set_page_config(page_title="Stable Food Editor", page_icon="🍳")
+st.set_page_config(page_title="Deep Sizzle Food Editor", page_icon="🍳")
 
-st.title("🍳 料理フォトエディター (安定反映版)")
-st.write("各項目 **1.0が元の状態** です。1.0より下げると効果が弱まり（マイナス）、上げると強まります。")
+st.title("🍳 料理フォトエディター (白飛び防止・深み優先版)")
+st.write("『Before.jpg』の深みを守りつつ、『After.jpg』のカリッとした質感を再現します。")
 
-# --- 1. パラメータの初期値管理 ---
-# After.jpgに近い推奨値を初期値として設定
+# --- 1. パラメータの管理 ---
+# 白飛びを防ぎ、深みを出すための新しい推奨値
 DEFAULTS = {
-    'sat_val': 2.2,
-    'con_val': 1.4,
-    'bri_val': 1.1,
-    'sha_val': 3.0
+    'sat_val': 1.6, # 彩度：After.jpgに近づけつつ、白潰れしないレベル
+    'con_val': 1.5, # コントラスト：黒を締め、料理を浮かび上がらせる
+    'bri_val': 1.0, # 明るさ：元画像を維持し、白飛びを徹底的に防ぐ
+    'sha_val': 3.0  # シャープネス：具材のカリカリ感を強調
 }
 
 # セッション状態に値を登録（初回のみ）
@@ -35,17 +35,15 @@ uploaded_file = st.file_uploader("写真をアップロード...", type=["jpg", 
 
 if uploaded_file is not None:
     # 画像の読み込み（一度だけ読み込み、メモリを節約）
-    # seek(0)でポインタのズレによる読み込み失敗（画像が消える現象）を防ぐ
     uploaded_file.seek(0)
     raw_img = Image.open(uploaded_file).convert("RGB")
     
     st.divider()
     
     # --- 3. 調整スライダー ---
-    # 0.0 〜 1.0 に設定すれば、元画像より効果を弱める（マイナス調整）が可能です
+    # 白飛びを防ぐため、明るさの初期値を1.0に設定しています
     col1, col2 = st.columns(2)
     with col1:
-        # st.session_state[key] と連結することで、スライダーの動きを確実に反映
         sat = st.slider("色彩の鮮やかさ (彩度)", 0.0, 5.0, key="sat_val")
         con = st.slider("立体感 (コントラスト)", 0.0, 5.0, key="con_val")
     with col2:
@@ -53,6 +51,7 @@ if uploaded_file is not None:
         bri = st.slider("明るさ調整", 0.0, 3.0, key="bri_val")
 
     # --- 4. 補正実行（変数を上書きしてメモリ消費を抑える） ---
+    # 処理順序：彩度 -> コントラスト -> 明るさ -> シャープネス
     processed_img = ImageEnhance.Color(raw_img).enhance(sat)
     processed_img = ImageEnhance.Contrast(processed_img).enhance(con)
     processed_img = ImageEnhance.Brightness(processed_img).enhance(bri)
@@ -63,13 +62,13 @@ if uploaded_file is not None:
 
     # --- 5. ダウンロード ---
     buf = io.BytesIO()
-    # メモリ節約のため quality=95 を推奨。解像度は維持されます。
-    processed_img.save(buf, format="JPEG", quality=95, subsampling=0)
+    # JPEGで高画質に保存、解像度は完全に維持
+    processed_img.save(buf, format="JPEG", quality=100, subsampling=0)
     
     st.download_button(
         label="🚀 補正済み画像をフルサイズで保存",
         data=buf.getvalue(),
-        file_name=f"fixed_{uploaded_file.name}",
+        file_name=f"sizzled_{uploaded_file.name}",
         mime="image/jpeg",
         use_container_width=True
     )
