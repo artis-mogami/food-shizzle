@@ -1,153 +1,128 @@
 import streamlit as st
-from PIL import Image, ImageEnhance
-import io
+from PIL import Image
 import numpy as np
-import gc
+import cv2
+import io
 
-st.set_page_config(page_title="Pro Food Editor", page_icon="🍳")
+st.set_page_config(layout="wide")
 
-@st.cache_data(show_spinner=False)
-def load_image(image_bytes):
-    return Image.open(io.BytesIO(image_bytes)).convert("RGB")
+# =========================
+# 初期値
+# =========================
+DEFAULTS = {
+    "gamma": 0.9,
+    "density": 1.1,
+    "green_boost": 0.4,
+    "orange_boost": 0.5,
+    "yellow_reduce": 0.2,
+    "cool_strength": 0.03,
+    "highlight_th": 235,
+    "highlight_str": 0.5,
+    "contrast": 1.2,
+    "sharp": 2.0
+}
 
-def resize_image(img, max_size=5000):
-    img.thumbnail((max_size, max_size))
-    return img
+def reset_settings():
+    for k, v in DEFAULTS.items():
+        st.session_state[k] = v
 
-# ----------------------------
-# ホワイトバランス
-# ----------------------------
-def fix_white_balance(img):
-    arr = np.array(img).astype(np.float32)
-    avg = np.mean(arr, axis=(0,1))
-    gray = np.mean(avg)
+for k, v in DEFAULTS.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
-    arr[:,:,0] *= gray / (avg[0] + 1e-6)
-    arr[:,:,1] *= gray / (avg[1] + 1e-6)
-    arr[:,:,2] *= gray / (avg[2] + 1e-6)
+# =========================
+# 処理関数
+# =========================
+def process(img):
 
-    return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+    img = np.array(img).astype(np.float32) / 255.0
 
-# ----------------------------
-# 白保護
-# ----------------------------
-def get_white_mask(arr, threshold=0.05):
-    max_c = arr.max(axis=2)
-    min_c = arr.min(axis=2)
-    return (max_c - min_c) < threshold
+    # ---- ガンマ（明るさ）----
+    img = np.power(img, st.session_state.gamma)
 
-# ----------------------------
-# 色強化（パラメータ化）
-# ----------------------------
-def selective_color_boost(img, green_boost, orange_boost):
-    arr = np.array(img).astype(np.float32) / 255.0
-    r, g, b = arr[:,:,0], arr[:,:,1], arr[:,:,2]
+    # ---- HSV変換 ----
+    hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
 
-    white_mask = get_white_mask(arr)
+    # ---- 全体の色の濃さ ----
+    hsv[:, :, 1] *= st.session_state.density
 
-    green_mask = (g > r * 0.8) & (g > b * 0.8)
-    orange_mask = (r > g * 0.85) & (g > b * 0.6) & (r > 0.3)
+    # ---- 葉っぱ強化（緑）----
+    green = (hsv[:, :, 0] > 35) & (hsv[:, :, 0] < 85)
+    hsv[:, :, 1][green] *= (1 + st.session_state.green_boost)
 
-    avg = np.mean(arr, axis=2, keepdims=True)
+    # ---- チーズ強化（オレンジ）----
+    orange = (hsv[:, :, 0] > 10) & (hsv[:, :, 0] < 35)
+    hsv[:, :, 1][orange] *= (1 + st.session_state.orange_boost)
 
-    green_mask &= ~white_mask
-    orange_mask &= ~white_mask
+    # ---- 黄色抑制 ----
+    yellow = (hsv[:, :, 0] > 20) & (hsv[:, :, 0] < 40)
+    hsv[:, :, 0][yellow] -= st.session_state.yellow_reduce * 10
 
-    arr[green_mask] += (arr[green_mask] - avg[green_mask]) * green_boost
-    arr[orange_mask] += (arr[orange_mask] - avg[orange_mask]) * orange_boost
+    # ---- 青寄せ ----
+    hsv[:, :, 0] += st.session_state.cool_strength * 10
 
-    return Image.fromarray(np.clip(arr * 255, 0, 255).astype(np.uint8))
+    # ---- 白飛び防止 ----
+    v = hsv[:, :, 2]
+    mask = v * 255 > st.session_state.highlight_th
+    hsv[:, :, 2][mask] = (
+        st.session_state.highlight_th / 255 +
+        (v[mask] - st.session_state.highlight_th / 255) * st.session_state.highlight_str
+    )
+    hsv[:, :, 1][mask] *= 0.5  # 白濁防止
 
-# ----------------------------
-# トーン
-# ----------------------------
-def apply_tone(img, gamma, density):
-    arr = np.array(img).astype(np.float32) / 255.0
-    arr = np.power(arr, gamma)
-    arr = arr * density
-    return Image.fromarray(np.clip(arr * 255, 0, 255).astype(np.uint8))
+    hsv = np.clip(hsv, 0, 1)
 
-# ----------------------------
-# 白飛び防止
-# ----------------------------
-def compress_highlight(img, threshold, strength):
-    arr = np.array(img).astype(np.float32)
-    mask = arr > threshold
-    arr[mask] = threshold + (arr[mask] - threshold) * strength
-    return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+    img = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
 
-# ----------------------------
-# クール寄せ
-# ----------------------------
-def add_cool_tone(img, strength):
-    arr = np.array(img).astype(np.float32) / 255.0
-    white_mask = get_white_mask(arr)
+    # ---- コントラスト ----
+    img = (img - 0.5) * st.session_state.contrast + 0.5
 
-    arr[:,:,0] *= (1 - strength)
-    arr[:,:,2] *= (1 + strength)
+    # ---- シャープ ----
+    kernel = np.array([
+        [0, -1, 0],
+        [-1, 5 + st.session_state.sharp, -1],
+        [0, -1, 0]
+    ])
+    img = cv2.filter2D(img, -1, kernel)
 
-    arr[white_mask] = arr[white_mask]
+    return np.clip(img, 0, 1)
 
-    return Image.fromarray(np.clip(arr * 255, 0, 255).astype(np.uint8))
 
-# ----------------------------
-# シャープ
-# ----------------------------
-def smart_sharpen(img, strength):
-    arr = np.array(img).astype(np.float32)
-
-    blur = (
-        np.roll(arr,1,0) + np.roll(arr,-1,0) +
-        np.roll(arr,1,1) + np.roll(arr,-1,1)
-    ) / 4
-
-    detail = arr - blur
-    arr = arr + detail * strength
-
-    return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
-
-# ----------------------------
-# UI（復活）
-# ----------------------------
-st.title("🍳 料理フォトエディター（完成版）")
+# =========================
+# UI
+# =========================
+st.title("🍳 料理フォトエディター（ピザ用）")
 
 uploaded_file = st.file_uploader("画像アップロード", type=["jpg","jpeg","png"])
 
 st.sidebar.header("🎛 調整")
+st.sidebar.button("🔄 リセット", on_click=reset_settings)
 
-gamma = st.sidebar.slider("明るさ（ガンマ）", 0.7, 1.2, 0.92)
-density = st.sidebar.slider("色の濃さ", 0.9, 1.3, 1.05)
-
-green_boost = st.sidebar.slider("葉っぱ強調", 0.0, 0.8, 0.45)
-orange_boost = st.sidebar.slider("チーズ強調", 0.0, 0.8, 0.55)
-
-cool_strength = st.sidebar.slider("青寄せ", 0.0, 0.08, 0.03)
-
-highlight_th = st.sidebar.slider("白飛び閾値", 220, 255, 242)
-highlight_str = st.sidebar.slider("白飛び抑制", 0.3, 0.8, 0.6)
-
-contrast = st.sidebar.slider("コントラスト", 1.0, 1.5, 1.2)
-sharp = st.sidebar.slider("シャープ", 1.0, 3.5, 2.4)
+gamma = st.sidebar.slider("明るさ", 0.7, 1.2, key="gamma")
+density = st.sidebar.slider("色の濃さ", 0.9, 1.3, key="density")
+green_boost = st.sidebar.slider("葉っぱ", 0.0, 0.8, key="green_boost")
+orange_boost = st.sidebar.slider("チーズ", 0.0, 0.8, key="orange_boost")
+yellow_reduce = st.sidebar.slider("黄色抑制", 0.0, 0.4, key="yellow_reduce")
+cool_strength = st.sidebar.slider("青寄せ", 0.0, 0.08, key="cool_strength")
+highlight_th = st.sidebar.slider("白飛び閾値", 220, 255, key="highlight_th")
+highlight_str = st.sidebar.slider("白飛び抑制", 0.3, 0.8, key="highlight_str")
+contrast = st.sidebar.slider("コントラスト", 1.0, 1.5, key="contrast")
+sharp = st.sidebar.slider("シャープ", 1.0, 3.5, key="sharp")
 
 if uploaded_file:
-    img = load_image(uploaded_file.read())
-    img = resize_image(img)
+    img = Image.open(uploaded_file).convert("RGB")
+    result = process(img)
 
-    # パイプライン
-    img = fix_white_balance(img)
-    img = selective_color_boost(img, green_boost, orange_boost)
-    img = apply_tone(img, gamma, density)
-    img = add_cool_tone(img, cool_strength)
-    img = compress_highlight(img, highlight_th, highlight_str)
-    img = ImageEnhance.Contrast(img).enhance(contrast)
-    img = smart_sharpen(img, sharp)
-
-    st.image(img, use_container_width=True)
+    col1, col2 = st.columns(2)
+    col1.image(img, caption="Before", use_container_width=True)
+    col2.image(result, caption="After", use_container_width=True)
 
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=95, subsampling=0)
+    Image.fromarray((result*255).astype(np.uint8)).save(buf, format="JPEG", quality=95)
 
-    st.download_button("ダウンロード", buf.getvalue(), "food_pro.jpg", "image/jpeg")
-
-    del img
-    gc.collect()
+    st.download_button(
+        "ダウンロード",
+        buf.getvalue(),
+        file_name="edited.jpg",
+        mime="image/jpeg"
+    )
