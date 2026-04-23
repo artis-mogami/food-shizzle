@@ -5,7 +5,7 @@ import numpy as np
 import cv2
 import gc
 
-st.set_page_config(page_title="Food Editor PRO", page_icon="🍳")
+st.set_page_config(page_title="Pizza Color Editor", page_icon="🍕")
 
 # ----------------------------
 # 画像ロード
@@ -15,7 +15,7 @@ def load_image(image_bytes):
     return Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
 # ----------------------------
-# プレビュー用リサイズ（軽量）
+# プレビュー用
 # ----------------------------
 def preview_resize(img, max_size=1024):
     img_copy = img.copy()
@@ -23,64 +23,54 @@ def preview_resize(img, max_size=1024):
     return img_copy
 
 # ----------------------------
-# メイン補正
+# 補正ロジック（ピザ特化）
 # ----------------------------
-def process_image(img, params):
+def process_image(img, p):
     img_np = np.array(img).astype(np.uint8)
 
     hsv = cv2.cvtColor(img_np, cv2.COLOR_RGB2HSV).astype(np.float32)
     h, s, v = cv2.split(hsv)
 
     # ----------------------------
-    # 白保護（かなり強め）
+    # 白保護（チーズ対策）
     # ----------------------------
-    low_sat_mask = s < 35
+    low_sat = s < 40
+    s[low_sat] *= 0.25
 
     # ----------------------------
-    # 彩度
+    # 彩度ベース
     # ----------------------------
-    s = s * params["density"]
+    s *= p["density"]
+
+    # ----------------------------
+    # チーズ（黄ばみ除去 + コク）
+    # ----------------------------
+    cheese = (h > 15) & (h < 35)
+    s[cheese] *= (1 - p["yellow_reduce"])
+    v[cheese] *= 1.08
 
     # ----------------------------
     # 葉っぱ（濃く・暗く）
     # ----------------------------
-    green_mask = (h > 35) & (h < 85)
-    s[green_mask] += params["green_boost"] * 255
-    v[green_mask] *= 0.9
+    green = (h > 35) & (h < 85)
+    s[green] += p["green_boost"] * 255
+    v[green] *= 0.85
 
     # ----------------------------
-    # チーズ（コク強化）
+    # 青寄せ（全体のくすみ除去）
     # ----------------------------
-    orange_mask = (h > 10) & (h < 30)
-    s[orange_mask] += params["orange_boost"] * 255
-    v[orange_mask] *= 1.05
+    h -= p["cool"] * 10
 
     # ----------------------------
-    # 黄色抑制（強め）
+    # 明るさ（自然補正）
     # ----------------------------
-    yellow_mask = (h > 25) & (h < 45)
-    s[yellow_mask] *= (1 - params["yellow_reduce"])
-
-    # ----------------------------
-    # 青寄せ（ほんの少し）
-    # ----------------------------
-    h = h - params["cool_strength"] * 10
-
-    # ----------------------------
-    # ガンマ補正
-    # ----------------------------
-    v = np.power(v / 255.0, params["gamma"]) * 255
+    v = np.power(v / 255.0, p["gamma"]) * 255
 
     # ----------------------------
     # 白飛び防止
     # ----------------------------
-    mask = v > params["highlight_th"]
-    v[mask] = params["highlight_th"] + (v[mask] - params["highlight_th"]) * params["highlight_str"]
-
-    # ----------------------------
-    # 白は絶対守る
-    # ----------------------------
-    s[low_sat_mask] = s[low_sat_mask] * 0.3
+    mask = v > 235
+    v[mask] = 235 + (v[mask] - 235) * 0.5
 
     # ----------------------------
     # clip（超重要）
@@ -99,77 +89,54 @@ def process_image(img, params):
 
     img_out = Image.fromarray(rgb)
 
-    # 最終仕上げ
-    img_out = ImageEnhance.Contrast(img_out).enhance(params["contrast"])
-    img_out = ImageEnhance.Sharpness(img_out).enhance(params["sharp"])
+    img_out = ImageEnhance.Contrast(img_out).enhance(p["contrast"])
+    img_out = ImageEnhance.Sharpness(img_out).enhance(p["sharp"])
 
     return img_out
 
 # ----------------------------
-# デフォルト
-# ----------------------------
-DEFAULTS = {
-    "gamma": 0.92,
-    "density": 1.12,
-    "green_boost": 0.45,
-    "orange_boost": 0.5,
-    "yellow_reduce": 0.28,
-    "cool_strength": 0.04,
-    "highlight_th": 235,
-    "highlight_str": 0.5,
-    "contrast": 1.25,
-    "sharp": 2.3
-}
-
-def reset_settings():
-    for k, v in DEFAULTS.items():
-        st.session_state[k] = v
-
-for k, v in DEFAULTS.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
-
-# ----------------------------
 # UI
 # ----------------------------
-st.title("🍳 Food Editor PRO（色補正完成版）")
+st.title("🍕 ピザ補正エディター（完成版）")
 
-uploaded_file = st.file_uploader("画像アップロード", type=["jpg","jpeg","png"])
+uploaded = st.file_uploader("画像アップロード", type=["jpg","png","jpeg"])
 
 st.sidebar.header("調整")
-st.sidebar.button("リセット", on_click=reset_settings)
 
-for k in DEFAULTS:
-    st.sidebar.slider(k, 0.0, 2.0, key=k)
+gamma = st.sidebar.slider("明るさ", 0.7, 1.2, 0.92, 0.01)
+density = st.sidebar.slider("色の濃さ", 0.9, 1.3, 1.1, 0.01)
+green_boost = st.sidebar.slider("葉っぱ強化", 0.0, 0.8, 0.5, 0.01)
+yellow_reduce = st.sidebar.slider("チーズ黄ばみ除去", 0.0, 0.5, 0.3, 0.01)
+cool = st.sidebar.slider("青寄せ", 0.0, 0.08, 0.04, 0.001)
+contrast = st.sidebar.slider("コントラスト", 1.0, 1.5, 1.25, 0.01)
+sharp = st.sidebar.slider("シャープ", 1.0, 3.5, 2.3, 0.1)
+
+params = {
+    "gamma": gamma,
+    "density": density,
+    "green_boost": green_boost,
+    "yellow_reduce": yellow_reduce,
+    "cool": cool,
+    "contrast": contrast,
+    "sharp": sharp
+}
 
 # ----------------------------
-# 処理
+# 実行
 # ----------------------------
-if uploaded_file:
-    file_bytes = uploaded_file.read()
+if uploaded:
+    img = load_image(uploaded.read())
 
-    img = load_image(file_bytes)
-
-    params = {k: st.session_state[k] for k in DEFAULTS.keys()}
-
-    # 高解像度で処理
     img_out = process_image(img, params)
 
-    # プレビューだけ軽量化
     preview = preview_resize(img_out, 1024)
 
-    st.image(preview, caption="After（プレビュー）", use_container_width=True)
+    st.image(preview, caption="After（プレビュー）")
 
-    # ダウンロード（高解像度維持）
     buf = io.BytesIO()
     img_out.save(buf, format="JPEG", quality=95, subsampling=0)
 
-    st.download_button(
-        "ダウンロード（高画質）",
-        buf.getvalue(),
-        "edited.jpg",
-        "image/jpeg"
-    )
+    st.download_button("高画質ダウンロード", buf.getvalue(), "pizza.jpg")
 
     del img, img_out
     gc.collect()
