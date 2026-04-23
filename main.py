@@ -15,7 +15,7 @@ def load_image(image_bytes):
     return Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
 # ----------------------------
-# プレビュー用
+# プレビュー
 # ----------------------------
 def preview_resize(img, max_size=1024):
     img_copy = img.copy()
@@ -23,7 +23,7 @@ def preview_resize(img, max_size=1024):
     return img_copy
 
 # ----------------------------
-# 補正ロジック（最終版）
+# 補正ロジック（白飛び修正版）
 # ----------------------------
 def process_image(img, p):
     img_np = np.array(img).astype(np.uint8)
@@ -32,29 +32,29 @@ def process_image(img, p):
     h, s, v = cv2.split(hsv)
 
     # ----------------------------
-    # 白保護（チーズ対策）
+    # 白保護
     # ----------------------------
     low_sat = s < 40
-    s[low_sat] *= 0.25
+    s[low_sat] *= 0.3
 
     # ----------------------------
-    # 彩度ベース
+    # 彩度
     # ----------------------------
     s *= p["density"]
 
     # ----------------------------
-    # チーズ（黄ばみ除去 + コク）
+    # チーズ
     # ----------------------------
     cheese = (h > 15) & (h < 35)
     s[cheese] *= (1 - p["yellow_reduce"])
-    v[cheese] *= 1.08
+    v[cheese] *= 1.05  # 少し控えめ
 
     # ----------------------------
-    # 葉っぱ（濃く・暗く）
+    # 葉っぱ
     # ----------------------------
     green = (h > 35) & (h < 85)
     s[green] += p["green_boost"] * 255
-    v[green] *= 0.85
+    v[green] *= 0.82
 
     # ----------------------------
     # 青寄せ
@@ -62,32 +62,26 @@ def process_image(img, p):
     h -= p["cool"] * 10
 
     # ----------------------------
-    # 明るさ（ガンマ）
+    # ガンマ
     # ----------------------------
     v = np.power(v / 255.0, p["gamma"]) * 255
 
-    # ============================
-    # ★ 改良：白飛び防止（本質修正）
-    # ============================
+    # =========================
+    # ★ 白飛び修正（重要）
+    # =========================
 
-    # 明るい部分
+    # 明度しっかり圧縮
     highlight = v > p["highlight_th"]
-
-    # ① 明度圧縮
     v[highlight] = p["highlight_th"] + (
-        (v[highlight] - p["highlight_th"]) * p["highlight_str"]
+        (v[highlight] - p["highlight_th"]) * 0.35
     )
 
-    # ② 白に近い部分は彩度を落とす（超重要）
-    high_v = v > 220
-    s[high_v] *= 0.6
-
-    # ③ 完全白はさらに落とす
-    extreme = v > 240
-    s[extreme] *= 0.3
+    # 彩度は「極一部だけ」落とす
+    extreme = v > 245
+    s[extreme] *= 0.85  # ←弱めに
 
     # ----------------------------
-    # clip（超重要）
+    # clip
     # ----------------------------
     h = np.clip(h, 0, 179)
     s = np.clip(s, 0, 255)
@@ -100,10 +94,11 @@ def process_image(img, p):
     ])
 
     rgb = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
-
     img_out = Image.fromarray(rgb)
 
+    # ----------------------------
     # 質感
+    # ----------------------------
     img_out = ImageEnhance.Contrast(img_out).enhance(p["contrast"])
     img_out = ImageEnhance.Sharpness(img_out).enhance(p["sharp"])
 
@@ -112,7 +107,7 @@ def process_image(img, p):
 # ----------------------------
 # UI
 # ----------------------------
-st.title("🍕 ピザ補正エディター（完成版）")
+st.title("🍕 ピザ補正エディター（白飛び修正版）")
 
 uploaded = st.file_uploader("画像アップロード", type=["jpg","png","jpeg"])
 
@@ -124,9 +119,7 @@ green_boost = st.sidebar.slider("葉っぱ強化", 0.0, 0.8, 0.35, 0.01)
 yellow_reduce = st.sidebar.slider("チーズ黄ばみ除去", 0.0, 0.5, 0.08, 0.01)
 cool = st.sidebar.slider("青寄せ", 0.0, 0.08, 0.04, 0.001)
 
-# ★追加（白飛び制御）
 highlight_th = st.sidebar.slider("白飛び閾値", 220, 250, 235, 1)
-highlight_str = st.sidebar.slider("白飛び圧縮", 0.3, 0.8, 0.5, 0.01)
 
 contrast = st.sidebar.slider("コントラスト", 1.0, 1.5, 1.25, 0.01)
 sharp = st.sidebar.slider("シャープ", 1.0, 3.5, 2.3, 0.1)
@@ -138,7 +131,6 @@ params = {
     "yellow_reduce": yellow_reduce,
     "cool": cool,
     "highlight_th": highlight_th,
-    "highlight_str": highlight_str,
     "contrast": contrast,
     "sharp": sharp
 }
