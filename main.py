@@ -1,25 +1,111 @@
 import streamlit as st
-from PIL import Image
-import numpy as np
-import cv2
+from PIL import Image, ImageEnhance
 import io
+import numpy as np
+import gc
+import cv2
 
-st.set_page_config(layout="wide")
+st.set_page_config(page_title="Stable Pro Food Editor", page_icon="🍳")
 
-# =========================
-# 初期値
-# =========================
+# ----------------------------
+# 画像ロード
+# ----------------------------
+@st.cache_data(show_spinner=False)
+def load_image(image_bytes):
+    return Image.open(io.BytesIO(image_bytes)).convert("RGB")
+
+# ----------------------------
+# リサイズ
+# ----------------------------
+def resize_image(img, max_size=5000):
+    img.thumbnail((max_size, max_size))
+    return img
+
+# ----------------------------
+# メイン補正（安定版）
+# ----------------------------
+def process_image(img, params):
+    img_np = np.array(img)
+
+    # RGB → HSV
+    hsv = cv2.cvtColor(img_np, cv2.COLOR_RGB2HSV).astype(np.float32)
+    h, s, v = cv2.split(hsv)
+
+    # =========================
+    # ① 白濁防止（低彩度は触らない）
+    # =========================
+    low_sat_mask = s < 40
+
+    # =========================
+    # ② 彩度（自然な濃さ）
+    # =========================
+    s = s * params["density"]
+    s[low_sat_mask] = s[low_sat_mask]  # 白保護
+
+    # =========================
+    # ③ 葉っぱ（緑）
+    # =========================
+    green_mask = (h > 35) & (h < 85)
+    s[green_mask] += params["green_boost"] * 255
+
+    # =========================
+    # ④ チーズ（オレンジ）
+    # =========================
+    orange_mask = (h > 10) & (h < 30)
+    s[orange_mask] += params["orange_boost"] * 255
+
+    # =========================
+    # ⑤ 黄色抑制
+    # =========================
+    yellow_mask = (h > 25) & (h < 40)
+    s[yellow_mask] *= (1 - params["yellow_reduce"])
+
+    # =========================
+    # ⑥ 青寄せ（ほんの少し）
+    # =========================
+    h = h - params["cool_strength"] * 10
+
+    # =========================
+    # ⑦ 明るさ（ガンマ）
+    # =========================
+    v = np.power(v / 255.0, params["gamma"]) * 255
+
+    # =========================
+    # ⑧ 白飛び防止
+    # =========================
+    mask = v > params["highlight_th"]
+    v[mask] = params["highlight_th"] + (v[mask] - params["highlight_th"]) * params["highlight_str"]
+
+    # clip
+    s = np.clip(s, 0, 255)
+    v = np.clip(v, 0, 255)
+    h = np.clip(h, 0, 179)
+
+    hsv = cv2.merge([h, s, v]).astype(np.uint8)
+    rgb = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+
+    img_out = Image.fromarray(rgb)
+
+    # 最後の質感調整
+    img_out = ImageEnhance.Contrast(img_out).enhance(params["contrast"])
+    img_out = ImageEnhance.Sharpness(img_out).enhance(params["sharp"])
+
+    return img_out
+
+# ----------------------------
+# デフォルト
+# ----------------------------
 DEFAULTS = {
     "gamma": 0.9,
-    "density": 1.1,
-    "green_boost": 0.4,
-    "orange_boost": 0.5,
+    "density": 1.15,
+    "green_boost": 0.35,
+    "orange_boost": 0.4,
     "yellow_reduce": 0.2,
     "cool_strength": 0.03,
     "highlight_th": 235,
     "highlight_str": 0.5,
     "contrast": 1.2,
-    "sharp": 2.0
+    "sharp": 2.2
 }
 
 def reset_settings():
@@ -30,68 +116,10 @@ for k, v in DEFAULTS.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-# =========================
-# 処理関数
-# =========================
-def process(img):
-
-    img = np.array(img).astype(np.float32) / 255.0
-
-    # ---- ガンマ（明るさ）----
-    img = np.power(img, st.session_state.gamma)
-
-    # ---- HSV変換 ----
-    hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
-
-    # ---- 全体の色の濃さ ----
-    hsv[:, :, 1] *= st.session_state.density
-
-    # ---- 葉っぱ強化（緑）----
-    green = (hsv[:, :, 0] > 35) & (hsv[:, :, 0] < 85)
-    hsv[:, :, 1][green] *= (1 + st.session_state.green_boost)
-
-    # ---- チーズ強化（オレンジ）----
-    orange = (hsv[:, :, 0] > 10) & (hsv[:, :, 0] < 35)
-    hsv[:, :, 1][orange] *= (1 + st.session_state.orange_boost)
-
-    # ---- 黄色抑制 ----
-    yellow = (hsv[:, :, 0] > 20) & (hsv[:, :, 0] < 40)
-    hsv[:, :, 0][yellow] -= st.session_state.yellow_reduce * 10
-
-    # ---- 青寄せ ----
-    hsv[:, :, 0] += st.session_state.cool_strength * 10
-
-    # ---- 白飛び防止 ----
-    v = hsv[:, :, 2]
-    mask = v * 255 > st.session_state.highlight_th
-    hsv[:, :, 2][mask] = (
-        st.session_state.highlight_th / 255 +
-        (v[mask] - st.session_state.highlight_th / 255) * st.session_state.highlight_str
-    )
-    hsv[:, :, 1][mask] *= 0.5  # 白濁防止
-
-    hsv = np.clip(hsv, 0, 1)
-
-    img = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
-
-    # ---- コントラスト ----
-    img = (img - 0.5) * st.session_state.contrast + 0.5
-
-    # ---- シャープ ----
-    kernel = np.array([
-        [0, -1, 0],
-        [-1, 5 + st.session_state.sharp, -1],
-        [0, -1, 0]
-    ])
-    img = cv2.filter2D(img, -1, kernel)
-
-    return np.clip(img, 0, 1)
-
-
-# =========================
+# ----------------------------
 # UI
-# =========================
-st.title("🍳 料理フォトエディター（ピザ用）")
+# ----------------------------
+st.title("🍳 料理フォトエディター（安定版・色崩れ修正）")
 
 uploaded_file = st.file_uploader("画像アップロード", type=["jpg","jpeg","png"])
 
@@ -110,19 +138,20 @@ contrast = st.sidebar.slider("コントラスト", 1.0, 1.5, key="contrast")
 sharp = st.sidebar.slider("シャープ", 1.0, 3.5, key="sharp")
 
 if uploaded_file:
-    img = Image.open(uploaded_file).convert("RGB")
-    result = process(img)
+    file_bytes = uploaded_file.read()
+    img = load_image(file_bytes)
+    img = resize_image(img, 5000)
 
-    col1, col2 = st.columns(2)
-    col1.image(img, caption="Before", use_container_width=True)
-    col2.image(result, caption="After", use_container_width=True)
+    params = {k: st.session_state[k] for k in DEFAULTS.keys()}
+
+    img_out = process_image(img, params)
+
+    st.image(img_out, caption="補正後", use_container_width=True)
 
     buf = io.BytesIO()
-    Image.fromarray((result*255).astype(np.uint8)).save(buf, format="JPEG", quality=95)
+    img_out.save(buf, format="JPEG", quality=95, subsampling=0)
 
-    st.download_button(
-        "ダウンロード",
-        buf.getvalue(),
-        file_name="edited.jpg",
-        mime="image/jpeg"
-    )
+    st.download_button("ダウンロード", buf.getvalue(), "edited.jpg", "image/jpeg")
+
+    del img, img_out
+    gc.collect()
