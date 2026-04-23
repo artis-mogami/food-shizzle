@@ -23,7 +23,7 @@ def preview_resize(img, max_size=1024):
     return img_copy
 
 # ----------------------------
-# 補正ロジック（ピザ特化）
+# 補正ロジック（最終版）
 # ----------------------------
 def process_image(img, p):
     img_np = np.array(img).astype(np.uint8)
@@ -57,20 +57,34 @@ def process_image(img, p):
     v[green] *= 0.85
 
     # ----------------------------
-    # 青寄せ（全体のくすみ除去）
+    # 青寄せ
     # ----------------------------
     h -= p["cool"] * 10
 
     # ----------------------------
-    # 明るさ（自然補正）
+    # 明るさ（ガンマ）
     # ----------------------------
     v = np.power(v / 255.0, p["gamma"]) * 255
 
-    # ----------------------------
-    # 白飛び防止
-    # ----------------------------
-    mask = v > 235
-    v[mask] = 235 + (v[mask] - 235) * 0.5
+    # ============================
+    # ★ 改良：白飛び防止（本質修正）
+    # ============================
+
+    # 明るい部分
+    highlight = v > p["highlight_th"]
+
+    # ① 明度圧縮
+    v[highlight] = p["highlight_th"] + (
+        (v[highlight] - p["highlight_th"]) * p["highlight_str"]
+    )
+
+    # ② 白に近い部分は彩度を落とす（超重要）
+    high_v = v > 220
+    s[high_v] *= 0.6
+
+    # ③ 完全白はさらに落とす
+    extreme = v > 240
+    s[extreme] *= 0.3
 
     # ----------------------------
     # clip（超重要）
@@ -89,6 +103,7 @@ def process_image(img, p):
 
     img_out = Image.fromarray(rgb)
 
+    # 質感
     img_out = ImageEnhance.Contrast(img_out).enhance(p["contrast"])
     img_out = ImageEnhance.Sharpness(img_out).enhance(p["sharp"])
 
@@ -104,10 +119,15 @@ uploaded = st.file_uploader("画像アップロード", type=["jpg","png","jpeg"
 st.sidebar.header("調整")
 
 gamma = st.sidebar.slider("明るさ", 0.7, 1.2, 0.92, 0.01)
-density = st.sidebar.slider("色の濃さ", 0.9, 1.3, 1.1, 0.01)
-green_boost = st.sidebar.slider("葉っぱ強化", 0.0, 0.8, 0.5, 0.01)
-yellow_reduce = st.sidebar.slider("チーズ黄ばみ除去", 0.0, 0.5, 0.3, 0.01)
+density = st.sidebar.slider("色の濃さ", 0.9, 1.3, 1.14, 0.01)
+green_boost = st.sidebar.slider("葉っぱ強化", 0.0, 0.8, 0.35, 0.01)
+yellow_reduce = st.sidebar.slider("チーズ黄ばみ除去", 0.0, 0.5, 0.08, 0.01)
 cool = st.sidebar.slider("青寄せ", 0.0, 0.08, 0.04, 0.001)
+
+# ★追加（白飛び制御）
+highlight_th = st.sidebar.slider("白飛び閾値", 220, 250, 235, 1)
+highlight_str = st.sidebar.slider("白飛び圧縮", 0.3, 0.8, 0.5, 0.01)
+
 contrast = st.sidebar.slider("コントラスト", 1.0, 1.5, 1.25, 0.01)
 sharp = st.sidebar.slider("シャープ", 1.0, 3.5, 2.3, 0.1)
 
@@ -117,6 +137,8 @@ params = {
     "green_boost": green_boost,
     "yellow_reduce": yellow_reduce,
     "cool": cool,
+    "highlight_th": highlight_th,
+    "highlight_str": highlight_str,
     "contrast": contrast,
     "sharp": sharp
 }
@@ -130,7 +152,6 @@ if uploaded:
     img_out = process_image(img, params)
 
     preview = preview_resize(img_out, 1024)
-
     st.image(preview, caption="After（プレビュー）")
 
     buf = io.BytesIO()
