@@ -36,7 +36,7 @@ PRESET_PIZZA = {
     "contrast": 1.33,
     "sharp": 2.30,
     "darken": 0.92,
-    "gray_mix": 0.07
+    "gray_mix": 0.02
 }
 
 # ----------------------------
