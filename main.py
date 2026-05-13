@@ -1,302 +1,329 @@
 import streamlit as st
-from PIL import Image, ImageEnhance
-import io
+from PIL import Image
 import numpy as np
 import cv2
-import gc
+import io
 import zipfile
 import json
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_agg import FigureCanvasAgg
 
-st.set_page_config(page_title="Food Shizzle Pro", page_icon="🍕", layout="wide")
+from streamlit_image_comparison import image_comparison
 
-# ----------------------------
-# 初期値
-# ----------------------------
-DEFAULT = {
-    "gamma": 0.95,
-    "density": 1.05,
-    "green_boost": 0.35,
-    "yellow_reduce": 0.08,
-    "cool": 0.04,
-    "highlight_th": 235,
-    "contrast": 1.2,
-    "sharp": 2.3,
-    "darken": 0.92,
-    "gray_mix": 0.08
+# =========================
+# PAGE
+# =========================
+
+st.set_page_config(
+    page_title="Food Shizzle",
+    layout="wide"
+)
+
+st.title("🍕 Food Shizzle")
+st.caption("Food Photo Color Grading Tool")
+
+# =========================
+# DEFAULT SETTINGS
+# =========================
+
+DEFAULTS = {
+    "brightness": 1.00,
+    "contrast": 1.08,
+    "saturation": 1.10,
+    "warmth": -0.03,
+    "red_boost": 0.02,
+    "green_boost": 0.12,
+    "green_dark": 0.88,
+    "cheese_white": 0.90,
+    "shadow": 1.03,
+    "highlight": 0.94,
+    "sharpness": 1.05,
 }
 
-PRESET_PIZZA = {
-    "gamma": 0.95,
-    "density": 1.07,
-    "green_boost": 0.23,
-    "yellow_reduce": 0.00,
-    "cool": 0.06,
-    "highlight_th": 224,
-    "contrast": 1.33,
-    "sharp": 2.30,
-    "darken": 0.92,
-    "gray_mix": 0.02
-}
+# =========================
+# SESSION STATE
+# =========================
 
-LUTS = {
-    "None": {},
-    "Cinema": {
-        "contrast": 1.35,
-        "cool": 0.03,
-        "darken": 0.94
-    },
-    "Fresh": {
-        "density": 1.12,
-        "green_boost": 0.45,
-        "cool": 0.05
-    },
-    "Warm Food": {
-        "contrast": 1.25,
-        "density": 1.10,
-        "yellow_reduce": 0.02
-    }
-}
+for k, v in DEFAULTS.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
-# ----------------------------
-# セッション
-# ----------------------------
-if "params" not in st.session_state:
-    st.session_state.params = DEFAULT.copy()
+# =========================
+# SIDEBAR
+# =========================
 
-# ----------------------------
-# 画像ロード
-# ----------------------------
-@st.cache_data(show_spinner=False)
-def load_image(image_bytes):
-    return Image.open(io.BytesIO(image_bytes)).convert("RGB")
+st.sidebar.header("🎛 Color Controls")
 
-# ----------------------------
-# プレビュー縮小
-# ----------------------------
-def preview_resize(img, max_size=1024):
-    img_copy = img.copy()
-    img_copy.thumbnail((max_size, max_size))
-    return img_copy
+if st.sidebar.button("Reset"):
+    for k, v in DEFAULTS.items():
+        st.session_state[k] = v
 
-# ----------------------------
-# ヒストグラム
-# ----------------------------
-def show_histogram(img):
-    arr = np.array(img)
-
-    fig, ax = plt.subplots(figsize=(5,3))
-
-    for i, c in enumerate(["r", "g", "b"]):
-        hist = cv2.calcHist([arr], [i], None, [256], [0,256])
-        ax.plot(hist, color=c)
-
-    ax.set_xlim([0,256])
-    ax.set_title("Histogram")
-
-    st.pyplot(fig)
-
-# ----------------------------
-# 補正処理
-# ----------------------------
-def process_image(img, p):
-
-    img_np = np.array(img).astype(np.uint8)
-
-    hsv = cv2.cvtColor(img_np, cv2.COLOR_RGB2HSV).astype(np.float32)
-    h, s, v = cv2.split(hsv)
-
-    low_sat = s < 40
-    s[low_sat] *= 0.3
-
-    s *= p["density"]
-
-    cheese = (h > 15) & (h < 35)
-    s[cheese] *= (1 - p["yellow_reduce"])
-    v[cheese] *= 1.01
-
-    green = (h > 35) & (h < 85)
-    s[green] += p["green_boost"] * 255
-    v[green] *= 0.78
-
-    h -= p["cool"] * 10
-
-    v = np.power(v / 255.0, p["gamma"]) * 255
-
-    v *= p["darken"]
-
-    s *= (1 - p["gray_mix"])
-
-    highlight = v > p["highlight_th"]
-    v[highlight] = p["highlight_th"] + (
-        (v[highlight] - p["highlight_th"]) * 0.2
+for k in DEFAULTS.keys():
+    st.sidebar.slider(
+        k,
+        min_value=0.0,
+        max_value=2.0,
+        key=k
     )
 
-    h = np.clip(h, 0, 179)
-    s = np.clip(s, 0, 255)
-    v = np.clip(v, 0, 255)
+# =========================
+# PRESET SAVE
+# =========================
 
-    hsv = cv2.merge([
-        h.astype(np.uint8),
-        s.astype(np.uint8),
-        v.astype(np.uint8)
-    ])
+st.sidebar.header("💾 Preset")
 
-    rgb = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+preset_name = st.sidebar.text_input("Preset Name")
 
-    img_out = Image.fromarray(rgb)
+if st.sidebar.button("Save Preset"):
 
-    img_out = ImageEnhance.Contrast(img_out).enhance(p["contrast"])
-    img_out = ImageEnhance.Sharpness(img_out).enhance(p["sharp"])
+    preset = {
+        k: st.session_state[k]
+        for k in DEFAULTS.keys()
+    }
 
-    return img_out
+    json_str = json.dumps(preset, indent=2)
 
-# ----------------------------
-# Before/After比較
-# ----------------------------
-def before_after(before, after):
+    st.sidebar.download_button(
+        "Download Preset",
+        json_str,
+        file_name=f"{preset_name or 'preset'}.json",
+        mime="application/json"
+    )
 
-    slider = st.slider("Before / After", 0, 100, 50)
+preset_file = st.sidebar.file_uploader(
+    "Load Preset",
+    type=["json"]
+)
 
-    before_np = np.array(before)
-    after_np = np.array(after)
+if preset_file:
 
-    h, w, _ = before_np.shape
-    split = int(w * (slider / 100))
+    loaded = json.load(preset_file)
 
-    combined = before_np.copy()
-    combined[:, split:] = after_np[:, split:]
+    for k in DEFAULTS.keys():
+        if k in loaded:
+            st.session_state[k] = float(loaded[k])
 
-    st.image(combined, use_container_width=True)
+# =========================
+# FUNCTIONS
+# =========================
 
-# ----------------------------
-# UI
-# ----------------------------
-st.title("🍕 Food Shizzle Pro")
+def preview_resize(img, max_width=900):
+
+    h, w = img.shape[:2]
+
+    if w <= max_width:
+        return img
+
+    scale = max_width / w
+
+    new_w = int(w * scale)
+    new_h = int(h * scale)
+
+    return cv2.resize(
+        img,
+        (new_w, new_h),
+        interpolation=cv2.INTER_AREA
+    )
+
+
+def apply_adjustments(img):
+
+    img = img.astype(np.float32) / 255.0
+
+    # brightness
+    img *= st.session_state["brightness"]
+
+    # contrast
+    img = ((img - 0.5) * st.session_state["contrast"]) + 0.5
+
+    # saturation
+    hsv = cv2.cvtColor(
+        (img * 255).astype(np.uint8),
+        cv2.COLOR_RGB2HSV
+    ).astype(np.float32)
+
+    hsv[:, :, 1] *= st.session_state["saturation"]
+    hsv[:, :, 1] = np.clip(hsv[:, :, 1], 0, 255)
+
+    img = cv2.cvtColor(
+        hsv.astype(np.uint8),
+        cv2.COLOR_HSV2RGB
+    ).astype(np.float32) / 255.0
+
+    # warmth
+    img[:, :, 0] += st.session_state["warmth"] * 0.5
+    img[:, :, 2] -= st.session_state["warmth"] * 0.5
+
+    # red boost
+    img[:, :, 0] *= (1.0 + st.session_state["red_boost"])
+
+    # green boost
+    img[:, :, 1] *= (1.0 + st.session_state["green_boost"])
+
+    # green dark
+    green_mask = (
+        (img[:, :, 1] > img[:, :, 0]) &
+        (img[:, :, 1] > img[:, :, 2])
+    )
+
+    img[:, :, 1][green_mask] *= st.session_state["green_dark"]
+
+    # cheese yellow suppress
+    yellow_mask = (
+        (img[:, :, 0] > 0.6) &
+        (img[:, :, 1] > 0.55) &
+        (img[:, :, 2] < 0.5)
+    )
+
+    img[yellow_mask] *= st.session_state["cheese_white"]
+
+    # shadows
+    shadow_mask = img < 0.4
+    img[shadow_mask] *= st.session_state["shadow"]
+
+    # highlights
+    highlight_mask = img > 0.7
+    img[highlight_mask] *= st.session_state["highlight"]
+
+    # sharpen
+    blur = cv2.GaussianBlur(img, (0, 0), 3)
+
+    img = cv2.addWeighted(
+        img,
+        1.0 + st.session_state["sharpness"],
+        blur,
+        -st.session_state["sharpness"],
+        0
+    )
+
+    img = np.clip(img, 0, 1)
+
+    return (img * 255).astype(np.uint8)
+
+
+def create_histogram(img):
+
+    fig, ax = plt.subplots(figsize=(5, 2))
+
+    colors = ["r", "g", "b"]
+
+    for i, c in enumerate(colors):
+
+        hist = cv2.calcHist(
+            [img],
+            [i],
+            None,
+            [256],
+            [0, 256]
+        )
+
+        ax.plot(hist, color=c)
+
+    ax.set_xlim([0, 256])
+
+    return fig
+
+
+# =========================
+# FILE UPLOAD
+# =========================
 
 uploaded_files = st.file_uploader(
-    "画像アップロード",
-    type=["jpg","jpeg","png"],
+    "Upload Images",
+    type=["jpg", "jpeg", "png"],
     accept_multiple_files=True
 )
 
-st.sidebar.header("調整")
+# =========================
+# MAIN
+# =========================
 
-# ----------------------------
-# プリセット
-# ----------------------------
-if st.sidebar.button("🍕おすすめフィルター"):
-    st.session_state.params = PRESET_PIZZA.copy()
-
-# ----------------------------
-# LUT
-# ----------------------------
-lut_select = st.sidebar.selectbox(
-    "LUT風フィルター",
-    list(LUTS.keys())
-)
-
-if lut_select != "None":
-    for k, v in LUTS[lut_select].items():
-        st.session_state.params[k] = v
-
-# ----------------------------
-# スライダー
-# ----------------------------
-def slider(key, label, min_v, max_v, step):
-
-    current = st.session_state.params[key]
-
-    if current > max_v:
-        current = max_v
-
-    st.session_state.params[key] = st.sidebar.slider(
-        label,
-        min_v,
-        max_v,
-        current,
-        step
-    )
-
-slider("gamma", "明るさ", 0.7, 1.2, 0.01)
-slider("density", "色の濃さ", 0.9, 1.3, 0.01)
-slider("green_boost", "葉っぱ強化", 0.0, 0.8, 0.01)
-slider("yellow_reduce", "チーズ黄ばみ除去", 0.0, 0.5, 0.01)
-slider("cool", "青寄せ", 0.0, 0.08, 0.001)
-slider("darken", "全体暗さ", 0.8, 1.0, 0.01)
-slider("gray_mix", "グレー感", 0.0, 0.2, 0.01)
-slider("highlight_th", "白飛び閾値", 220, 250, 1)
-slider("contrast", "コントラスト", 1.0, 1.5, 0.01)
-slider("sharp", "シャープ", 1.0, 3.5, 0.1)
-
-# ----------------------------
-# プリセット保存
-# ----------------------------
-st.sidebar.subheader("プリセット保存")
-
-preset_name = st.sidebar.text_input("名前")
-
-if st.sidebar.button("保存"):
-
-    with open("saved_presets.json", "w", encoding="utf-8") as f:
-        json.dump(st.session_state.params, f, ensure_ascii=False)
-
-    st.sidebar.success("保存しました")
-
-# ----------------------------
-# リセット
-# ----------------------------
-if st.sidebar.button("リセット"):
-    st.session_state.params = DEFAULT.copy()
-
-params = st.session_state.params
-
-# ----------------------------
-# 一括処理
-# ----------------------------
 if uploaded_files:
 
     zip_buffer = io.BytesIO()
 
-    with zipfile.ZipFile(zip_buffer, "a") as zipf:
+    for uploaded_file in uploaded_files:
 
-        for uploaded in uploaded_files:
+        image = Image.open(uploaded_file).convert("RGB")
 
-            img = load_image(uploaded.read())
+        img = np.array(image)
 
-            img_out = process_image(img, params)
+        img_out = apply_adjustments(img)
 
-            st.subheader(uploaded.name)
+        # =========================
+        # PREVIEW
+        # =========================
 
-            preview_before = preview_resize(img)
-            preview_after = preview_resize(img_out)
+        st.subheader(uploaded_file.name)
 
-            before_after(preview_before, preview_after)
+        preview_before = preview_resize(img, 900)
+        preview_after = preview_resize(img_out, 900)
 
-            col1, col2 = st.columns(2)
+        image_comparison(
+            img1=preview_before,
+            img2=preview_after,
+            label1="Before",
+            label2="After",
+            width=900,
+        )
 
-            with col1:
-                st.caption("Before")
-                st.image(preview_before, use_container_width=True)
+        # =========================
+        # HISTOGRAM
+        # =========================
 
-            with col2:
-                st.caption("After")
-                st.image(preview_after, use_container_width=True)
+        with st.expander("📊 Histogram"):
 
-            show_histogram(preview_after)
+            fig = create_histogram(img_out)
 
-            buf = io.BytesIO()
-            img_out.save(buf, format="JPEG", quality=95, subsampling=0)
+            st.pyplot(fig)
 
-            zipf.writestr(uploaded.name, buf.getvalue())
+        # =========================
+        # DOWNLOAD
+        # =========================
 
-            del img, img_out
-            gc.collect()
+        output = Image.fromarray(img_out)
+
+        img_buffer = io.BytesIO()
+
+        output.save(
+            img_buffer,
+            format="JPEG",
+            quality=95
+        )
+
+        img_buffer.seek(0)
+
+        out_name = uploaded_file.name.replace(
+            ".jpg",
+            "_graded.jpg"
+        ).replace(
+            ".png",
+            "_graded.jpg"
+        )
+
+        st.download_button(
+            f"Download {out_name}",
+            img_buffer,
+            file_name=out_name,
+            mime="image/jpeg"
+        )
+
+        # ZIP
+        with zipfile.ZipFile(zip_buffer, "a") as zipf:
+
+            zipf.writestr(
+                out_name,
+                img_buffer.getvalue()
+            )
+
+    # =========================
+    # ZIP DOWNLOAD
+    # =========================
+
+    st.divider()
 
     st.download_button(
-        "📦 一括ダウンロードZIP",
+        "📦 Download All Images ZIP",
         zip_buffer.getvalue(),
-        "food_shizzle_export.zip",
+        file_name="food_shizzle_export.zip",
         mime="application/zip"
     )
