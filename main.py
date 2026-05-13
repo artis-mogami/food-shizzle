@@ -4,6 +4,7 @@ import io
 import numpy as np
 import cv2
 import gc
+import zipfile
 import json
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg
