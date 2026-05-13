@@ -1,16 +1,14 @@
 import streamlit as st
 from PIL import Image, ImageEnhance
-from streamlit_image_comparison import image_comparison
 import io
 import numpy as np
 import cv2
 import gc
+import json
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 
-st.set_page_config(
-    page_title="Pizza Color Editor",
-    page_icon="🍕",
-    layout="wide"
-)
+st.set_page_config(page_title="Food Shizzle Pro", page_icon="🍕", layout="wide")
 
 # ----------------------------
 # 初期値
@@ -28,9 +26,6 @@ DEFAULT = {
     "gray_mix": 0.08
 }
 
-# ----------------------------
-# おすすめフィルター
-# ----------------------------
 PRESET_PIZZA = {
     "gamma": 0.95,
     "density": 1.07,
@@ -41,7 +36,26 @@ PRESET_PIZZA = {
     "contrast": 1.33,
     "sharp": 2.30,
     "darken": 0.92,
-    "gray_mix": 0.07
+    "gray_mix": 0.02
+}
+
+LUTS = {
+    "None": {},
+    "Cinema": {
+        "contrast": 1.35,
+        "cool": 0.03,
+        "darken": 0.94
+    },
+    "Fresh": {
+        "density": 1.12,
+        "green_boost": 0.45,
+        "cool": 0.05
+    },
+    "Warm Food": {
+        "contrast": 1.25,
+        "density": 1.10,
+        "yellow_reduce": 0.02
+    }
 }
 
 # ----------------------------
@@ -58,15 +72,32 @@ def load_image(image_bytes):
     return Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
 # ----------------------------
-# プレビュー用縮小
+# プレビュー縮小
 # ----------------------------
-def preview_resize(img, max_size=1200):
+def preview_resize(img, max_size=1024):
     img_copy = img.copy()
     img_copy.thumbnail((max_size, max_size))
     return img_copy
 
 # ----------------------------
-# 補正ロジック
+# ヒストグラム
+# ----------------------------
+def show_histogram(img):
+    arr = np.array(img)
+
+    fig, ax = plt.subplots(figsize=(5,3))
+
+    for i, c in enumerate(["r", "g", "b"]):
+        hist = cv2.calcHist([arr], [i], None, [256], [0,256])
+        ax.plot(hist, color=c)
+
+    ax.set_xlim([0,256])
+    ax.set_title("Histogram")
+
+    st.pyplot(fig)
+
+# ----------------------------
+# 補正処理
 # ----------------------------
 def process_image(img, p):
 
@@ -75,65 +106,32 @@ def process_image(img, p):
     hsv = cv2.cvtColor(img_np, cv2.COLOR_RGB2HSV).astype(np.float32)
     h, s, v = cv2.split(hsv)
 
-    # ----------------------------
-    # 白保護
-    # ----------------------------
     low_sat = s < 40
     s[low_sat] *= 0.3
 
-    # ----------------------------
-    # 彩度
-    # ----------------------------
     s *= p["density"]
 
-    # ----------------------------
-    # チーズ
-    # ----------------------------
     cheese = (h > 15) & (h < 35)
-
     s[cheese] *= (1 - p["yellow_reduce"])
-    v[cheese] *= 1.02
+    v[cheese] *= 1.01
 
-    # ----------------------------
-    # 葉っぱ
-    # ----------------------------
     green = (h > 35) & (h < 85)
-
     s[green] += p["green_boost"] * 255
-    v[green] *= 0.80
+    v[green] *= 0.78
 
-    # ----------------------------
-    # 青寄せ
-    # ----------------------------
     h -= p["cool"] * 10
 
-    # ----------------------------
-    # 明るさ
-    # ----------------------------
     v = np.power(v / 255.0, p["gamma"]) * 255
 
-    # ----------------------------
-    # 全体暗さ
-    # ----------------------------
     v *= p["darken"]
 
-    # ----------------------------
-    # グレー感
-    # ----------------------------
     s *= (1 - p["gray_mix"])
 
-    # ----------------------------
-    # 白飛び抑制
-    # ----------------------------
     highlight = v > p["highlight_th"]
-
     v[highlight] = p["highlight_th"] + (
-        (v[highlight] - p["highlight_th"]) * 0.3
+        (v[highlight] - p["highlight_th"]) * 0.2
     )
 
-    # ----------------------------
-    # clip
-    # ----------------------------
     h = np.clip(h, 0, 179)
     s = np.clip(s, 0, 255)
     v = np.clip(v, 0, 255)
@@ -148,50 +146,75 @@ def process_image(img, p):
 
     img_out = Image.fromarray(rgb)
 
-    # ----------------------------
-    # 質感
-    # ----------------------------
-    img_out = ImageEnhance.Contrast(img_out).enhance(
-        p["contrast"]
-    )
-
-    img_out = ImageEnhance.Sharpness(img_out).enhance(
-        p["sharp"]
-    )
+    img_out = ImageEnhance.Contrast(img_out).enhance(p["contrast"])
+    img_out = ImageEnhance.Sharpness(img_out).enhance(p["sharp"])
 
     return img_out
 
 # ----------------------------
+# Before/After比較
+# ----------------------------
+def before_after(before, after):
+
+    slider = st.slider("Before / After", 0, 100, 50)
+
+    before_np = np.array(before)
+    after_np = np.array(after)
+
+    h, w, _ = before_np.shape
+    split = int(w * (slider / 100))
+
+    combined = before_np.copy()
+    combined[:, split:] = after_np[:, split:]
+
+    st.image(combined, use_container_width=True)
+
+# ----------------------------
 # UI
 # ----------------------------
-st.title("🍕 ピザ補正エディター")
+st.title("🍕 Food Shizzle Pro")
 
-uploaded = st.file_uploader(
+uploaded_files = st.file_uploader(
     "画像アップロード",
-    type=["jpg", "jpeg", "png"]
+    type=["jpg","jpeg","png"],
+    accept_multiple_files=True
 )
 
-# ----------------------------
-# サイドバー
-# ----------------------------
 st.sidebar.header("調整")
 
 # ----------------------------
 # プリセット
 # ----------------------------
-if st.sidebar.button("🍕 おすすめフィルター"):
+if st.sidebar.button("🍕おすすめフィルター"):
     st.session_state.params = PRESET_PIZZA.copy()
+
+# ----------------------------
+# LUT
+# ----------------------------
+lut_select = st.sidebar.selectbox(
+    "LUT風フィルター",
+    list(LUTS.keys())
+)
+
+if lut_select != "None":
+    for k, v in LUTS[lut_select].items():
+        st.session_state.params[k] = v
 
 # ----------------------------
 # スライダー
 # ----------------------------
 def slider(key, label, min_v, max_v, step):
 
+    current = st.session_state.params[key]
+
+    if current > max_v:
+        current = max_v
+
     st.session_state.params[key] = st.sidebar.slider(
         label,
         min_v,
         max_v,
-        st.session_state.params[key],
+        current,
         step
     )
 
@@ -199,72 +222,80 @@ slider("gamma", "明るさ", 0.7, 1.2, 0.01)
 slider("density", "色の濃さ", 0.9, 1.3, 0.01)
 slider("green_boost", "葉っぱ強化", 0.0, 0.8, 0.01)
 slider("yellow_reduce", "チーズ黄ばみ除去", 0.0, 0.5, 0.01)
-
 slider("cool", "青寄せ", 0.0, 0.08, 0.001)
-
 slider("darken", "全体暗さ", 0.8, 1.0, 0.01)
 slider("gray_mix", "グレー感", 0.0, 0.2, 0.01)
-
 slider("highlight_th", "白飛び閾値", 220, 250, 1)
-
 slider("contrast", "コントラスト", 1.0, 1.5, 0.01)
 slider("sharp", "シャープ", 1.0, 3.5, 0.1)
 
 # ----------------------------
+# プリセット保存
+# ----------------------------
+st.sidebar.subheader("プリセット保存")
+
+preset_name = st.sidebar.text_input("名前")
+
+if st.sidebar.button("保存"):
+
+    with open("saved_presets.json", "w", encoding="utf-8") as f:
+        json.dump(st.session_state.params, f, ensure_ascii=False)
+
+    st.sidebar.success("保存しました")
+
+# ----------------------------
 # リセット
 # ----------------------------
-if st.sidebar.button("🔄 リセット"):
+if st.sidebar.button("リセット"):
     st.session_state.params = DEFAULT.copy()
 
 params = st.session_state.params
 
 # ----------------------------
-# 実行
+# 一括処理
 # ----------------------------
-if uploaded:
+if uploaded_files:
 
-    file_bytes = uploaded.read()
+    zip_buffer = io.BytesIO()
 
-    img = load_image(file_bytes)
+    with zipfile.ZipFile(zip_buffer, "a") as zipf:
 
-    img_out = process_image(img, params)
+        for uploaded in uploaded_files:
 
-    # ----------------------------
-    # 比較用プレビュー
-    # ----------------------------
-    before_preview = preview_resize(img, 1200)
-    after_preview = preview_resize(img_out, 1200)
+            img = load_image(uploaded.read())
 
-    st.subheader("Before / After 比較")
+            img_out = process_image(img, params)
 
-    image_comparison(
-        img1=before_preview,
-        img2=after_preview,
-        label1="Before",
-        label2="After",
-        width=900
-    )
+            st.subheader(uploaded.name)
 
-    # ----------------------------
-    # ダウンロード
-    # ----------------------------
-    buf = io.BytesIO()
+            preview_before = preview_resize(img)
+            preview_after = preview_resize(img_out)
 
-    img_out.save(
-        buf,
-        format="JPEG",
-        quality=95,
-        subsampling=0
-    )
+            before_after(preview_before, preview_after)
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.caption("Before")
+                st.image(preview_before, use_container_width=True)
+
+            with col2:
+                st.caption("After")
+                st.image(preview_after, use_container_width=True)
+
+            show_histogram(preview_after)
+
+            buf = io.BytesIO()
+            img_out.save(buf, format="JPEG", quality=95, subsampling=0)
+
+            zipf.writestr(uploaded.name, buf.getvalue())
+
+            del img, img_out
+            gc.collect()
 
     st.download_button(
-        "📥 高画質ダウンロード",
-        buf.getvalue(),
-        "pizza.jpg",
-        "image/jpeg"
+        "📦 一括ダウンロードZIP",
+        zip_buffer.getvalue(),
+        "food_shizzle_export.zip",
+        mime="application/zip"
     )
-
-    del img
-    del img_out
-
-    gc.collect()
